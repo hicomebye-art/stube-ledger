@@ -240,10 +240,15 @@ function weeklyTab(M) {
 
 function empsTab() {
   const list = live('employees').sort((a, b) => (a.order || 0) - (b.order || 0));
-  const calOpts = cur => `<option value="">캘린더 선택</option>${(pui.cals || []).map(c => `<option value="${esc(c.id)}" ${c.id === cur ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}${cur && !(pui.cals || []).some(c => c.id === cur) ? `<option value="${esc(cur)}" selected>(연결된 캘린더)</option>` : ''}`;
+  // 앱을 다시 열면 캘린더 목록을 자동으로 다시 읽음 (연결돼 있을 때)
+  if (drive.calendar.connected() && !pui.cals && !pui.calsLoading) {
+    pui.calsLoading = true;
+    drive.calendar.list().then(l => { pui.cals = l; }).catch(e => { pui.calsErr = e.message === 'CAL_LOGIN' ? '캘린더 연결이 풀렸습니다. [구글 캘린더 연결]을 다시 눌러주세요' : '캘린더 목록을 읽지 못했습니다: ' + e.message; }).finally(() => { pui.calsLoading = false; render(); });
+  }
+  const calOpts = (cur, curName) => `<option value="">${pui.calsLoading ? '캘린더 목록 읽는 중…' : '캘린더 선택'}</option>${(pui.cals || []).map(c => `<option value="${esc(c.id)}" ${c.id === cur ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}${cur && !(pui.cals || []).some(c => c.id === cur) ? `<option value="${esc(cur)}" selected>${esc(curName || '(연결된 캘린더)')}</option>` : ''}`;
   return `<section class="card"><div class="row-h"><h2>직원 관리</h2><button class="primary" data-act="pyEmpAdd">직원 추가</button></div>
     <div class="hint">계좌 번호는 대표님 구글 드라이브의 비공개 장부에만 저장되고, 화면에서는 가려서 보입니다 ([보기]·[복사]). 카톡용 정산표 그림에는 끝 4자리만 나옵니다. 계좌를 새로 넣거나 바꾸면 [계좌 확인]을 눌러야 "이체 준비 완료"가 됩니다. 이름만으로 계좌를 자동 연결하지 않습니다.</div>
-    <div class="btns">${drive.calendar.connected() ? `${tag('구글 캘린더 연결됨 (읽기 전용)', 'green')} <button class="sm ghost" data-act="pyCalList">캘린더 목록 다시 읽기</button>` : '<button data-act="pyCalConnect">구글 캘린더 연결 (읽기 전용)</button>'}</div>
+    <div class="btns">${drive.calendar.connected() && !pui.calsErr ? `${tag(`구글 캘린더 연결됨 (읽기 전용)${pui.cals ? ` · 캘린더 ${pui.cals.length}개` : ''}`, 'green')} <button class="sm ghost" data-act="pyCalList">캘린더 목록 다시 읽기</button>` : `<button class="primary" data-act="pyCalConnect">구글 캘린더 연결 (읽기 전용)</button>${pui.calsErr ? ` <span class="red">${esc(pui.calsErr)}</span>` : ''}`}</div>
     ${list.length ? `<table class="tbl"><thead><tr><th>이름 · ID</th><th>계산 기준</th><th>일당 (평일 / 토·일·휴일·야간)</th><th>공제</th><th>출근 캘린더</th><th>계좌 (은행 / 예금주 / 계좌 번호)</th><th></th></tr></thead><tbody>
     ${list.map(e => `<tr class="${e.active === false ? 'dim' : ''}">
       <td><input type="text" class="w8" value="${esc(e.name)}" data-chg="pyEmp" data-id="${e.id}" data-f="name"><div class="muted s">${esc(e.id)}</div></td>
@@ -251,7 +256,7 @@ function empsTab() {
       <td>${e.kind === 'ledger' ? '<span class="muted">임금대장 금액 사용</span>' : `<input type="text" inputmode="numeric" class="w8 r" value="${e.rates?.weekday ? won(e.rates.weekday) : ''}" placeholder="평일" data-chg="pyRate" data-id="${e.id}" data-f="weekday"> / <input type="text" inputmode="numeric" class="w8 r" value="${e.rates?.weekend ? won(e.rates.weekend) : ''}" placeholder="토·일·휴일·야간" data-chg="pyRate" data-id="${e.id}" data-f="weekend">`}</td>
       <td>${e.kind === 'ledger' ? '<span class="muted">임금대장 기준</span>' : `<select data-chg="pyDed" data-id="${e.id}"><option value="">선택</option><option value="none" ${e.deduct?.mode === 'none' ? 'selected' : ''}>공제 없음</option><option value="3.3" ${e.deduct?.mode === '3.3' ? 'selected' : ''}>3.3%</option><option value="fixed" ${e.deduct?.mode === 'fixed' ? 'selected' : ''}>정액 ${e.deduct?.mode === 'fixed' ? won(e.deduct.amount) + '원' : ''}</option></select>
         <label class="chk"><input type="checkbox" data-chg="pyDedOk" data-id="${e.id}" ${e.deduct?.confirmed ? 'checked' : ''}> 확인함</label>`}</td>
-      <td>${e.kind === 'ledger' ? '' : `<select data-chg="pyEmp" data-id="${e.id}" data-f="calId">${calOpts(e.calId)}</select>`}</td>
+      <td>${e.kind === 'ledger' ? '' : `<select data-chg="pyEmp" data-id="${e.id}" data-f="calId">${calOpts(e.calId, e.calName)}</select>${e.calId ? '' : '<div class="red s">캘린더를 골라야 출근 기록을 읽습니다</div>'}`}</td>
       <td><div class="acctbox">
         <input type="text" class="w6" placeholder="은행" value="${esc(e.bank || '')}" id="ac-b-${e.id}">
         <input type="text" class="w6" placeholder="예금주" value="${esc(e.holder || '')}" id="ac-h-${e.id}">
@@ -509,11 +514,12 @@ export function extendPayUI({ ACT, CHG }) {
     },
     pyAcctOk: el => { if (!confirm('은행·예금주·계좌 번호를 직원에게 직접 확인하셨나요? 확인하면 "이체 준비 완료"가 됩니다.')) return; if (confirmAccount(el.dataset.id)) { commit('emp'); } else toast('은행·예금주·계좌 번호를 모두 넣어주세요'); },
     pyCalConnect: async () => {
+      pui.calsErr = '';
       try { await drive.calendar.connect(); pui.cals = await drive.calendar.list(); toast('구글 캘린더를 읽기 전용으로 연결했습니다. 직원마다 출근 캘린더를 고르세요'); }
       catch (e) { toast(e.message === 'API_OFF' ? '구글 클라우드에서 Calendar API를 켜야 합니다 (설정 안내 참고)' : '캘린더 연결 실패: ' + e.message); if (e.message === 'API_OFF') window.open(drive.CAL_API_URL, '_blank', 'noopener'); }
       render();
     },
-    pyCalList: async () => { try { pui.cals = await drive.calendar.list(); } catch (e) { toast('캘린더 목록을 읽지 못했습니다: ' + e.message); } render(); },
+    pyCalList: async () => { pui.calsErr = ''; try { pui.cals = await drive.calendar.list(); toast(`캘린더 ${pui.cals.length}개를 읽었습니다`); } catch (e) { pui.calsErr = e.message === 'CAL_LOGIN' ? '캘린더 연결이 풀렸습니다. [구글 캘린더 연결]을 다시 눌러주세요' : '캘린더 목록을 읽지 못했습니다: ' + e.message; } render(); },
     pyCal: async el => {
       const e = empById(el.dataset.emp), id = el.dataset.id;
       const run = runOf(id);
@@ -644,7 +650,13 @@ export function extendPayUI({ ACT, CHG }) {
   Object.assign(CHG, {
     pyYm: el => { pui.ym = el.value || thisYm(); pui.sel = ''; render(); },
     clYm: el => { pui.closeYm = el.value || addMonths(thisYm(), -1); render(); },
-    pyEmp: el => { patch('employees', el.dataset.id, { [el.dataset.f]: el.value.trim() }); commit('emp'); },
+    pyEmp: el => {
+      const f = el.dataset.f, v = el.value.trim();
+      // 출근 캘린더는 이름도 같이 기억 (목록을 아직 못 읽었을 때도 무엇을 골랐는지 보이게)
+      const extra = f === 'calId' ? { calName: (pui.cals || []).find(c => c.id === v)?.name || '' } : {};
+      patch('employees', el.dataset.id, { [f]: v, ...extra }); commit('emp');
+      if (f === 'calId' && v) toast(`출근 캘린더: ${extra.calName || v}`);
+    },
     pyRate: el => { const e = empById(el.dataset.id); const n = el.value.trim() === '' ? null : parseWonInput(el.value); if (n != null && !(n > 0)) { toast('금액을 숫자로 넣어주세요'); render(); return; } patch('employees', e.id, { rates: { ...(e.rates || {}), [el.dataset.f]: n } }); commit('emp'); },
     pyDed: el => {
       const e = empById(el.dataset.id); let d = { mode: el.value, confirmed: false };

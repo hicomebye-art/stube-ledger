@@ -200,31 +200,42 @@ export function reopenMonth(ym, reason) {
 
 // ───── 임금대장 엑셀 ─────
 // 성명 + 차인지급액(실지급액·실수령액) 칸이 있는 표. 귀속월·지급일은 머리말에서 찾되, 없으면 비워둠 (추정하지 않음)
+// 두 가지 모양을 읽음:
+//  ① 한 사람 = 한 줄 (머리글 한 줄)
+//  ② 한 사람 = 여러 줄 (세무사 프로그램 임금대장: 머리글이 5줄, 성명은 첫 줄, 차인지급액은 다섯째 줄 맨 오른쪽)
+//     → 머리글에서 각 이름표가 "몇 번째 줄·몇 번째 칸"에 있는지 보고, 직원마다 같은 자리에서 값을 읽음
 export function parseWageLedger(rows) {
   const t = v => String(v ?? '').trim();
   const k = v => t(v).replace(/\s+/g, '');
-  let hi = -1;
-  for (let i = 0; i < Math.min(rows.length, 40); i++) {
-    const ks = (rows[i] || []).map(k);
-    if (ks.some(x => /^(성명|사원명|이름|성명\(이름\))$/.test(x)) && ks.some(x => /차인지급액|실지급액|실수령액|차감지급액/.test(x))) { hi = i; break; }
+  const NAME = /^(성명|사원명|이름|성명\(이름\))$/, NET = /^(차인지급액|실지급액|실수령액|차감지급액)$/, GROSS = /^(지급총액|지급합계|급여총액|총지급액|지급액계)$/, DED = /^(공제총액|공제합계|공제액계|총공제액)$/;
+  const find = (re, r0, r1) => { for (let r = r0; r <= r1 && r < rows.length; r++) { const c = (rows[r] || []).findIndex(x => re.test(k(x))); if (c >= 0) return { r, c }; } return null; };
+  let h0 = -1, pos = null;
+  for (let i = 0; i < Math.min(rows.length, 40) && h0 < 0; i++) {
+    const nm = (rows[i] || []).findIndex(x => NAME.test(k(x)));
+    if (nm < 0) continue;
+    const net = find(NET, i, i + 6);
+    if (net) { h0 = i; pos = { name: { r: i, c: nm }, net, gross: find(GROSS, i, i + 6), ded: find(DED, i, i + 6) }; }
   }
-  if (hi < 0) return { error: '임금대장 형식을 찾지 못했습니다 (성명·차인지급액 칸이 있는 표)' };
-  const ks = rows[hi].map(k);
-  const ci = re => ks.findIndex(x => re.test(x));
-  const c = { name: ci(/^(성명|사원명|이름|성명\(이름\))$/), net: ci(/차인지급액|실지급액|실수령액|차감지급액/), gross: ci(/^(지급총액|지급합계|급여총액|총지급액|지급액계)$/), ded: ci(/^(공제총액|공제합계|공제액계|총공제액)$/) };
-  const head = rows.slice(0, hi).flat().map(t).join(' ');
+  if (h0 < 0) return { error: '임금대장 형식을 찾지 못했습니다 (성명·차인지급액 칸이 있는 표)' };
+  const lastHead = Math.max(...Object.values(pos).filter(Boolean).map(p => p.r));
+  // 머리글 아래에 다른 이름표가 몇 줄 더 있는지 (예: 공제합계·차인지급액이 있는 줄까지가 머리글)
+  let hEnd = lastHead;
+  for (let r = lastHead + 1; r <= h0 + 6 && r < rows.length; r++) { const row = rows[r] || []; if (row.some(x => /[가-힣]{2,}/.test(t(x))) && !row.some(x => typeof x === 'number' || /^\d[\d,]*$/.test(t(x)))) hEnd = r; else break; }
+  const block = hEnd - h0 + 1; // 한 사람이 차지하는 줄 수
+  const head = rows.slice(0, h0).flat().map(t).join(' ');
   const am = head.match(/(20\d{2})\s*[년.\-/]\s*(\d{1,2})\s*월?\s*(귀속|분)/) || head.match(/귀속\s*(?:연월|년월)?\s*[:：]?\s*(20\d{2})\s*[년.\-/]\s*(\d{1,2})/);
   const pd = head.match(/지급\s*(?:일|일자)\s*[:：]?\s*(20\d{2})\s*[년.\-/]\s*(\d{1,2})\s*[월.\-/]\s*(\d{1,2})/);
   const pad = n => String(n).padStart(2, '0');
-  const toInt = v => { const s = String(v ?? '').replace(/[,\s원]/g, ''); return /^-?\d+$/.test(s) ? parseInt(s, 10) : (typeof v === 'number' && Number.isInteger(v) ? v : null); };
+  const toInt = v => { if (v == null || v === '') return null; if (typeof v === 'number') return Number.isInteger(v) ? v : null; const s = String(v).replace(/[,\s원]/g, ''); return /^-?\d+$/.test(s) ? parseInt(s, 10) : null; };
   const list = [];
-  for (let r = hi + 1; r < rows.length; r++) {
-    const row = rows[r] || [];
-    const name = t(row[c.name]);
-    if (!name || /^(합계|계|총계|소계)$/.test(name.replace(/\s+/g, ''))) continue;
-    const net = toInt(row[c.net]);
+  const at = (s, p) => (p ? (rows[s + (p.r - h0)] || [])[p.c] : null);
+  for (let s = hEnd + 1; s < rows.length; s += block) {
+    const name = t(at(s, pos.name));
+    if (!name) continue;
+    if (/^(합계|계|총계|소계|합\s*계)$/.test(name.replace(/\s+/g, '')) || !/[가-힣A-Za-z]/.test(name)) continue;
+    const net = toInt(at(s, pos.net));
     if (net == null) continue;
-    list.push({ name, net, gross: c.gross >= 0 ? toInt(row[c.gross]) : null, deduction: c.ded >= 0 ? toInt(row[c.ded]) : null, row: r + 1 });
+    list.push({ name, net, gross: toInt(at(s, pos.gross)), deduction: toInt(at(s, pos.ded)), row: s + 1 });
   }
   return { type: 'wage', attrYm: am ? `${am[1]}-${pad(am[2])}` : '', payDate: pd ? `${pd[1]}-${pad(pd[2])}-${pad(pd[3])}` : '', list };
 }
