@@ -42,8 +42,15 @@ export function loadGis() {
   return gisPromise;
 }
 
+// 구글 로그인 표(1시간짜리)를 이 기기에 잠시 보관해서, 앱을 다시 열거나 새로고침해도 바로 이어서 저장되게 합니다.
+// (이 앱이 만든 파일만 다룰 수 있는 권한이고, 1시간이 지나면 저절로 쓸 수 없게 됩니다)
+function keepToken() { meta.tok = token; meta.tokExp = tokenExp; writeMeta(); }
+function dropToken() { token = null; delete meta.tok; delete meta.tokExp; writeMeta(); }
+
 export function init() {
-  emit(meta.connected ? 'needLogin' : 'off');
+  if (meta.connected && meta.tok && Date.now() < Number(meta.tokExp || 0)) { token = meta.tok; tokenExp = Number(meta.tokExp); }
+  emit(token ? 'syncing' : meta.connected ? 'needLogin' : 'off');
+  if (token) setTimeout(() => syncNow(), 0);
   loadGis().catch(() => {});
   window.addEventListener('online', () => syncNow());
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') syncNow(); });
@@ -61,7 +68,7 @@ export function connect() {
           if (resp.error) { emit('error', '로그인 실패: ' + resp.error); reject(new Error(resp.error)); return; }
           token = resp.access_token;
           tokenExp = Date.now() + (Number(resp.expires_in || 3600) - 120) * 1000;
-          meta.connected = true; writeMeta();
+          meta.connected = true; keepToken();
           resolve();
           syncNow();
         },
@@ -80,9 +87,9 @@ export function disconnect() {
 }
 
 async function api(url, opts = {}) {
-  if (!token || Date.now() > tokenExp) { token = null; emit('needLogin'); throw new Error('NEED_LOGIN'); }
+  if (!token || Date.now() > tokenExp) { dropToken(); emit('needLogin'); throw new Error('NEED_LOGIN'); }
   const r = await fetch(url, { ...opts, headers: { Authorization: 'Bearer ' + token, ...(opts.headers || {}) } });
-  if (r.status === 401) { token = null; emit('needLogin'); throw new Error('NEED_LOGIN'); }
+  if (r.status === 401) { dropToken(); emit('needLogin'); throw new Error('NEED_LOGIN'); }
   if (!r.ok) throw new Error(explain(r.status, await r.text()));
   return r;
 }

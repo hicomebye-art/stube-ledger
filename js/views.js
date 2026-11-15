@@ -7,6 +7,29 @@ import { commitImport, previewCounts, BANK_TO_ACCT } from './importer.js';
 import * as drive from './drive.js';
 import { SANDBOX, NS } from './env.js';
 
+// 카카오톡·네이버 앱 안의 브라우저에서는 구글 로그인이 막힙니다 → 크롬으로 열도록 안내
+const UA = navigator.userAgent || '';
+const IN_APP = /KAKAOTALK|NAVER\(inapp|DaumApps|Instagram|FBAN|FBAV|Line\/|everytimeApp|; wv\)/i.test(UA);
+function externalHref() {
+  const u = location.href;
+  if (/KAKAOTALK/i.test(UA)) return 'kakaotalk://web/openExternal?url=' + encodeURIComponent(u);
+  if (/Android/i.test(UA)) return `intent://${u.replace(/^https?:\/\//, '')}#Intent;scheme=https;package=com.android.chrome;end`;
+  return u;
+}
+const inAppBar = () => (IN_APP ? `<div class="sandbox">카카오톡·네이버 같은 앱 안에서 열린 화면이라 구글 로그인이 막힙니다. <a href="${esc(externalHref())}">크롬으로 열기</a></div>` : '');
+
+// 핸드폰: 드라이브에 아직 안 올라간 상태를 크게 알려줌
+export function syncBar() {
+  const s = drive.sync.status;
+  const pend = store.dirty ? ' 이 기기에서 적은 기록이 아직 드라이브에 올라가지 않았습니다 (PC에서 안 보임).' : '';
+  if (s === 'off') return `<div class="syncbar bad">구글 드라이브에 연결되지 않았습니다.${pend} <button class="sm primary" data-act="connect">연결</button></div>`;
+  if (s === 'needLogin') return `<div class="syncbar bad">구글 연결이 풀렸습니다.${pend} <button class="sm primary" data-act="connect">다시 연결</button></div>`;
+  if (s === 'error') return `<div class="syncbar bad">저장 오류: ${esc(drive.sync.msg === 'API_OFF' ? 'Drive API 꺼짐' : drive.sync.msg)}${pend} <button class="sm" data-act="sync">다시 시도</button></div>`;
+  if (s === 'offline') return `<div class="syncbar warn">인터넷이 끊겼습니다. 연결되면 자동으로 올라갑니다.</div>`;
+  if (s === 'ok' && drive.sync.lastAt) return `<div class="syncbar ok">드라이브와 맞춤 ${new Date(drive.sync.lastAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}</div>`;
+  return '';
+}
+
 const sandboxBar = () => (SANDBOX ? `<div class="sandbox">테스트 장부 "${esc(SANDBOX)}" 입니다 — 실제 장부가 아닙니다. 드라이브의 별도 폴더에 저장됩니다. <a href="./">실제 장부로 가기</a></div>` : '');
 
 const S = () => store.state;
@@ -73,6 +96,8 @@ export function syncBadge() {
 
 export function renderSync() {
   for (const id of ['sync', 'msync']) { const el = document.getElementById(id); if (el) el.innerHTML = syncBadge(); }
+  const bar = document.getElementById('syncbar');
+  if (bar) bar.innerHTML = syncBar();
 }
 
 // ───────── 렌더 ─────────
@@ -84,8 +109,8 @@ export function render() {
   const route = (location.hash || '').slice(1) || (isMobileWidth() ? 'm' : 'home');
   const M = model();
   const app = document.getElementById('app');
-  if (route === 'm' || route === 'm-add') app.innerHTML = sandboxBar() + mobile(route, M);
-  else app.innerHTML = sandboxBar() + shell(route, M);
+  if (route === 'm' || route === 'm-add') app.innerHTML = inAppBar() + sandboxBar() + `<div id="syncbar">${syncBar()}</div>` + mobile(route, M);
+  else app.innerHTML = inAppBar() + sandboxBar() + shell(route, M);
   if (fid) {
     const el = document.getElementById(fid);
     if (el) { el.focus(); if (sel) { try { el.setSelectionRange(sel[0], sel[1]); } catch { /* 무시 */ } } }

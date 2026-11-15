@@ -190,3 +190,9 @@ tr.done td { color: var(--muted); }
 /* 테스트 장부 표시 */
 .sandbox { background: #b71c1c; color: #fff; padding: 8px 14px; font-weight: 600; font-size: 14px; }
 .sandbox a { color: #fff; text-decoration: underline; margin-left: 8px; }
+
+/* 핸드폰 동기화 상태 띠 */
+.syncbar { padding: 10px 14px; font-size: 14px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.syncbar.bad { background: #fdecea; color: #b71c1c; font-weight: 600; }
+.syncbar.warn { background: #fff4e5; color: #8a5300; }
+.syncbar.ok { background: #e8f5e9; color: #1b5e20; font-size: 12px; padding: 4px 14px; }
