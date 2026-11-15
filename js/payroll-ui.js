@@ -105,7 +105,8 @@ export function wageNameInfo(name) {
 
 // files: [{ file, name, path }] → 장부의 payfiles 기록 (같은 파일은 0건)
 export async function readWageFiles(files) {
-  const known = new Set(live('payfiles').map(f => f.sha));
+  // 예전에 "형식을 못 읽음"이었던 파일은 다시 읽어봄 (앱이 새 양식을 읽게 고쳐졌을 수 있음)
+  const known = new Set(live('payfiles').filter(f => f.kind !== 'ledgerBad').map(f => f.sha));
   const r = { ledger: 0, statement: 0, dup: 0, other: 0, revisions: 0, ids: [] };
   for (const f of files) {
     if (!/\.(xlsx|xls)$/i.test(f.name)) { r.other++; continue; }
@@ -122,6 +123,8 @@ export async function readWageFiles(files) {
       } catch { parsed = null; }
       if (parsed) kind = 'ledger'; else if (kind === 'ledger') kind = 'ledgerBad'; else { r.other++; continue; }
     }
+    const wasBad = live('payfiles').some(x => x.sha === sha && x.kind === 'ledgerBad');
+    if (wasBad && kind === 'ledgerBad') { r.dup++; continue; } // 여전히 못 읽음 → 그대로 둠
     const attrYm = parsed?.attrYm || info.attrYm;
     const payYm = parsed?.payDate ? ymOf(parsed.payDate) : info.payYm;
     const payDate = parsed?.payDate || (payYm ? `${payYm}-16` : ''); // 이 직원들의 지급일은 매월 16일
@@ -130,12 +133,13 @@ export async function readWageFiles(files) {
     const rows = parsed ? parsed.list.map(x => ({ name: x.name, net: x.net, gross: x.gross, deduction: x.deduction })) : [];
     put('payfiles', { id, sha, name: f.name, path: f.path || '', kind, attrYm, payYm, payDate, rows, total: rows.reduce((s, x) => s + x.net, 0), seenAt: nowTs(), status: kind === 'statement' ? 'kept' : 'downloaded', revisionOf: prev ? prev.id : '' });
     known.add(sha); r.ids.push(id);
-    if (kind === 'statement') r.statement++; else if (prev) r.revisions++; else r.ledger++;
+    if (wasBad) r.reread = (r.reread || 0) + 1;
+    else if (kind === 'statement') r.statement++; else if (prev) r.revisions++; else r.ledger++;
   }
   if (r.ids.length) commit('payfiles');
   return r;
 }
-const wageMsg = (r, n) => `엑셀 ${n}개 확인 → 새 임금대장 ${r.ledger}${r.revisions ? ` · 수정본 ${r.revisions}` : ''} · 임금명세서 ${r.statement} (교부용 보관) · 이미 읽은 파일 ${r.dup}${r.other ? ` · 급여자료 아님 ${r.other}` : ''}`;
+const wageMsg = (r, n) => `엑셀 ${n}개 확인 → ${r.reread ? `전에 못 읽은 파일 다시 읽음 ${r.reread} · ` : ''}새 임금대장 ${r.ledger}${r.revisions ? ` · 수정본 ${r.revisions}` : ''} · 임금명세서 ${r.statement} (교부용 보관) · 이미 읽은 파일 ${r.dup}${r.other ? ` · 급여자료 아님 ${r.other}` : ''}`;
 
 export async function scanWageDir(h) {
   const files = [];
