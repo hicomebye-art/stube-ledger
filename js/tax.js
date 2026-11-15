@@ -58,8 +58,11 @@ function ymAfter(text, re) {
 }
 
 // 본문 글자에서 읽기
+// 홈택스 납부서는 금액 숫자를 한 칸씩 띄어 찍음 (예: "1 2 3 , 4 5 6") → "123,456"으로 붙임
+const joinDigits = s => s.replace(/(\d)[ \t]+(?=[\d,])/g, '$1').replace(/,[ \t]+(?=\d)/g, ',');
+
 export function parseTaxSlip(text, fileName = '') {
-  const t = N(text);
+  const t = joinDigits(N(text));
   const lines = t.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
   const body = { kind: kindOf(t), attrYm: ymAfter(t, /귀속/), payYm: ymAfter(t, /지급/) };
   // 납부기한
@@ -72,6 +75,9 @@ export function parseTaxSlip(text, fileName = '') {
     let v = amountAfter(l, /납\s*기\s*내\s*(금액|세액)?/);
     if (v != null) { inDue.push(v); continue; }
     v = amountAfter(l, /(납부\s*할?\s*(세액|금액)\s*(합계|계)?|납부\s*총액|총\s*납부\s*(세액|금액)|납부\s*금액|세액\s*합계|합\s*계\s*(금액|세액)?)/);
+    // 홈택스 원천세 납부서: "세목명 | 납부금액" 표의 "근로소득세(갑) 123,456" 줄과 "계 123,456" 줄
+    if (v == null) v = amountAfter(l, /근로소득세\s*\(\s*갑\s*\)(?=\s*\d)/);
+    if (v == null) v = amountAfter(l, /(?:^|\s)계(?=\s*\d)/);
     if (v != null) other.push(v);
   }
   const pick = arr => { const u = [...new Set(arr)]; return u.length === 1 ? u[0] : null; };
