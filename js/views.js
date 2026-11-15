@@ -8,6 +8,8 @@ import * as drive from './drive.js';
 import { SANDBOX, NS, BUILD } from './env.js';
 import { extendUI, costAddView, jobsView } from './jobs-ui.js';
 import { costModel, dupCosts, costUsing } from './jobs.js';
+import { taxSection, taxMobile, extendTaxUI } from './tax-ui.js';
+import { taxStates } from './tax.js';
 
 // 카카오톡·네이버 앱 안의 브라우저에서는 구글 로그인이 막힙니다 → 크롬으로 열도록 안내
 const UA = navigator.userAgent || '';
@@ -156,6 +158,7 @@ function statusTag(o) {
   if (o.done) {
     if (o.doneBy === 'bank') return tag(`대조 완료 ${fmtMD(o.tx.date)}${o.diff ? ` · 실제 ${won(o.actual)} (차이 ${o.diff > 0 ? '+' : ''}${won(o.diff)})` : ''}`, o.diff ? 'amber' : 'green');
     if (o.doneBy === 'invoice') return tag('계산서와 대조 완료', 'green');
+    if (o.doneBy === 'tax') return tag('세금 납부 확인', 'green');
     return tag('사용자 확인 · 은행 대조 전', 'blue');
   }
   if (o.partial) {
@@ -214,6 +217,8 @@ function checkItems(M) {
     ['미분류 증빙·비용 (작업 안 정함)', costModel(M).unalloc.length, '#jobs'],
     ['같은 돈이 원가에 두 번 잡힘', dupCosts(M).length, '#jobs'],
     ['내 통장 이체인지 확인할 것', n('xfer'), '#review'],
+    ['세무자료 확인 필요 (못 읽은 값·수정본)', live('taxdocs').filter(d => d.status === 'review').length, '#import'],
+    ['납부기한 지난 세금 (납부 확인 전)', (() => { const st = taxStates(M); return live('taxdocs').filter(d => d.status === 'ok' && d.due && d.due < T && st.get(d.id).k === 'unknown').length; })(), '#import'],
   ].filter(x => x[1]);
   const cov = M.accounts.map(a => { const e = lastCovered(M, a.id); return `${esc(a.name)} ${e ? fmtMD(e) + '까지' : '자료 없음'}`; }).join(' · ');
   return { items, cov };
@@ -372,6 +377,7 @@ VIEWS.import = M => {
     <input type="file" id="file" multiple accept=".xls,.xlsx" data-chg="files">
   </label>
   ${ui.imports.map((p, i) => importCard(M, p, i)).join('')}
+  ${taxSection(M)}
   <section class="card">
     <div class="row-h"><h2>가져온 기록</h2>${due ? `<span class="muted">다음 자료 받기: ${fmtMD(due)} (보름마다)</span>` : ''}</div>
     ${hist.length ? `<table class="tbl"><thead><tr><th>가져온 때</th><th>파일</th><th>종류</th><th>기간</th><th class="r">새로 추가</th><th class="r">중복 건너뜀</th><th>검증</th></tr></thead><tbody>
@@ -785,6 +791,7 @@ function mobile(route, M) {
     <div class="row2"><a class="mbtn" href="#m-add" data-act="mAdd" data-m="new">+ 지출·증빙 기록</a><a class="mbtn ghost" href="#m-add" data-act="mAdd" data-m="attach">📎 증빙만 붙이기</a></div>
     <h2 class="msect">오늘 할 일 <span class="muted s">(받을 돈은 체크하면 입금 확인)</span></h2>
     ${todayPanel(M, true)}
+    ${taxMobile(M)}
     <section class="mcard">
       <div class="muted">통장 잔액 합계</div><div class="big">${won(M.totalEst)}원</div>
       ${M.accounts.map(a => { const b = M.balances[a.id]; return `<div class="kv"><span>${esc(acctLabel(a))}</span><b>${b.bal === null ? '-' : won(b.est)}</b></div>`; }).join('')}
@@ -1045,6 +1052,7 @@ const CHG = {
 };
 
 extendUI({ ACT, CHG, INP });
+extendTaxUI({ ACT, CHG });
 
 export function initUI() {
   const root = document.getElementById('app');

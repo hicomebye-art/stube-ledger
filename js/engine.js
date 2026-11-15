@@ -2,6 +2,7 @@
 // 모든 계산은 정수 덧셈·뺄셈만 사용합니다 (오차 0원).
 import { store, live } from './store.js';
 import { todayStr, addDays, dayDiff, normName, nameMatch, ymOf, addMonths, daysInMonth } from './util.js';
+import { taxStates } from './tax.js';
 
 const CARD_RE = /체크|카드|IC직불|현금IC|정정/;
 const cmpTx = (a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : (a.ord || 0) - (b.ord || 0));
@@ -399,6 +400,7 @@ export function occurrences(S, M, from, to) {
   const out = [];
   const curYm = ymOf(from);
   const recOf = id => (id && S.recurring[id] && !S.recurring[id].deleted ? S.recurring[id] : null);
+  let taxSt = null;
   for (const p of live('plans')) {
     if (p.skipped) continue;
     const r = recOf(p.recId);
@@ -412,6 +414,12 @@ export function occurrences(S, M, from, to) {
       done: !!p.done, doneBy: p.done ? (p.doneBy || 'user') : '', noDate: !p.date, overdue: false,
     };
     if (!o.done && p.invoiceId && M.inv.st[p.invoiceId]?.state === 'paid') { o.done = true; o.doneBy = 'invoice'; }
+    // 세무자료(원천세 납부서)에서 넣은 계획: 그 세금의 납부가 확인되면 완료
+    if (!o.done && p.taxDocId) {
+      taxSt = taxSt || taxStates(M);
+      const k = taxSt.get(p.taxDocId)?.k;
+      if (k && k !== 'unknown') { o.done = true; o.doneBy = 'tax'; }
+    }
     if (o.noDate) { if (!o.done) out.push(o); continue; }
     if (p.date >= from && p.date <= to) out.push(o);
     else if (!o.done && p.date < from) out.push({ ...o, overdue: true });

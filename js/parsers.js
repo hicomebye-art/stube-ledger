@@ -76,6 +76,8 @@ function parseBank(rows, hi, fileName) {
   let bank = '';
   if (ks.includes('보낸분/받는분') && ks.includes('회차/방법')) bank = 'suhyup';
   else if (ks.includes('거래기록사항') && ks.includes('거래후잔액')) bank = 'nh';
+  // 카카오뱅크: 거래일시 | 구분 | 거래금액(출금은 -) | 거래 후 잔액 | 거래구분 | 내용 | 메모
+  else if (ks.includes('거래후잔액') && ks.includes('거래구분') && ks.includes('내용') && ks.includes('거래금액')) bank = 'kakao';
   else if (/수협/.test(fileName)) bank = 'suhyup';
   else if (/농협|NH/i.test(fileName)) bank = 'nh';
   else if (/카카오/.test(fileName)) bank = 'kakao';
@@ -135,7 +137,7 @@ function parseBank(rows, hi, fileName) {
   if (cntCell) { const m = cntCell.match(/(\d+)/); if (m) checks.push({ label: '건수', ok: +m[1] === list.length, detail: `은행 ${m[1]}건 / 읽은 ${list.length}건` }); }
   if (problems.length) checks.push({ label: '읽기 오류', ok: false, detail: problems.slice(0, 3).join(', ') });
 
-  const holder = txt(labelValue(rows, hi, /^예금주명?$/) || '');
+  const holder = txt(labelValue(rows, hi, /^(예금주명?|성명)$/) || '');
   return { type: 'bank', bank, holder, rows: list, breaks, checks, problems, from: list[0].date, to: list[list.length - 1].date };
 }
 
