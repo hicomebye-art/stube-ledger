@@ -10,7 +10,8 @@ import { todayStr, addDays, dayDiff, ymOf, addMonths, normName, uid, nowTs } fro
 import { covered } from './engine.js';
 
 export const EMP_KIND = { ledger: '임금대장 (월급)', monthlyDaily: '출근 기록 × 일당 (월 정산)', weekly: '출근 기록 × 일당 (주급)' };
-export const DAY_KIND = { weekday: '평일 근무', weekend: '토·일 근무', holiday: '휴일 근무', half: '반일 근무', custom: '별도 금액' };
+// 두 번째 일당(토·일·휴일·야간)은 토·일·휴일 근무와 야간 근무에 씀
+export const DAY_KIND = { weekday: '평일 근무', weekend: '토·일 근무', holiday: '휴일 근무', night: '야간 근무', half: '반일 근무', custom: '별도 금액' };
 const WD = ['일', '월', '화', '수', '목', '금', '토'];
 export const dow = d => new Date(d + 'T00:00:00').getDay();
 export const wdName = d => WD[dow(d)];
@@ -30,17 +31,24 @@ export const employees = () => live('employees').filter(e => e.active !== false)
 export const empById = id => { const e = store.state.employees?.[id]; return e && !e.deleted ? e : null; };
 export function acctReady(e) { return e && e.acct?.status === 'ready' && /^\d{4}$/.test(e.last4 || '') && e.bank && e.holder; }
 
-// 계좌 바꾸기: 끝 4자리·은행·예금주가 바뀌면 "확인 전"으로 돌아감 (사용자가 확인해야 이체 준비 완료)
-export function setAccount(empId, { bank, holder, last4 }) {
+// 계좌 번호: 숫자와 - 만. 화면에서는 가려서 보이고 [보기]·[복사]로 확인. 정산표 그림에는 끝 4자리만.
+// (대표님 구글 드라이브의 비공개 장부에만 저장. 앱 코드·테스트에는 들어가지 않음)
+export const cleanAcctNo = s => String(s || '').replace(/[^\d-]/g, '').replace(/-{2,}/g, '-').replace(/^-|-$/g, '');
+export const maskAcct = n => { const s = cleanAcctNo(n); return s ? s.replace(/\d(?=(?:\D*\d){4})/g, '*') : ''; };
+// 계좌 바꾸기: 계좌 번호·은행·예금주가 바뀌면 "확인 전"으로 돌아감 (사용자가 확인해야 이체 준비 완료)
+// 이전 계좌 기록에는 끝 4자리만 남김
+export function setAccount(empId, { bank, holder, acctNo }) {
   const e = empById(empId);
-  const changed = e.bank !== bank || e.holder !== holder || e.last4 !== last4;
+  const no = cleanAcctNo(acctNo);
+  const last4 = no.replace(/\D/g, '').slice(-4);
+  const changed = e.bank !== bank || e.holder !== holder || (e.acctNo || '') !== no;
   if (!changed) return e;
   const hist = [...(e.acct?.history || []), { at: nowTs(), bank: e.bank || '', holder: e.holder || '', last4: e.last4 || '', status: e.acct?.status || '' }];
-  return patch('employees', empId, { bank, holder, last4, acct: { status: 'unverified', history: hist.slice(-20) } });
+  return patch('employees', empId, { bank, holder, acctNo: no, last4, acct: { status: 'unverified', history: hist.slice(-20) } });
 }
 export function confirmAccount(empId) {
   const e = empById(empId);
-  if (!/^\d{4}$/.test(e.last4 || '') || !e.bank || !e.holder) return false;
+  if (!/^\d{4}$/.test(e.last4 || '') || (e.acctNo && cleanAcctNo(e.acctNo).replace(/\D/g, '').length < 8) || !e.bank || !e.holder) return false;
   patch('employees', empId, { acct: { ...(e.acct || {}), status: 'ready', confirmedAt: nowTs() } });
   return true;
 }
@@ -65,7 +73,7 @@ export function weeksTouching(ym) {
 // 일당 계산 (사용자가 바꾼 금액·반일·별도 금액 반영)
 export function dayAmount(e, day) {
   const r = e.rates || {};
-  const base = day.kind === 'weekday' ? r.weekday : (day.kind === 'weekend' || day.kind === 'holiday') ? r.weekend : day.kind === 'half' ? (day.halfOf === 'weekend' ? r.weekend : r.weekday) : null;
+  const base = day.kind === 'weekday' ? r.weekday : (day.kind === 'weekend' || day.kind === 'holiday' || day.kind === 'night') ? r.weekend : day.kind === 'half' ? (day.halfOf === 'weekend' ? r.weekend : r.weekday) : null;
   if (day.kind === 'custom') return Number.isSafeInteger(day.amount) && day.amount > 0 ? day.amount : null;
   if (!Number.isSafeInteger(base) || base <= 0) return null;
   return day.kind === 'half' ? Math.floor(base / 2) : base;
@@ -95,7 +103,7 @@ export function calcDaily(e, run) {
   let gross = 0;
   const lines = days.map(d => { const a = dayAmount(e, d); if (a == null) issues.push(`${d.date.slice(5)} 일당을 알 수 없음`); else gross += a; return { ...d, amount: a }; });
   if (!e.rates || !(e.rates.weekday > 0)) issues.push('평일 일당이 설정되지 않음');
-  if (days.some(d => d.kind === 'weekend' || d.kind === 'holiday') && !(e.rates?.weekend > 0)) issues.push('토·일·휴일 일당이 설정되지 않음');
+  if (days.some(d => d.kind === 'weekend' || d.kind === 'holiday' || d.kind === 'night') && !(e.rates?.weekend > 0)) issues.push('토·일·휴일·야간 일당이 설정되지 않음');
   if (!e.deduct?.confirmed) issues.push('공제 방식을 확인하지 않음 (직원 관리에서 확인)');
   const deduction = issues.length ? null : deductionOf(e, gross);
   if (deduction == null && !issues.length) issues.push('공제액을 알 수 없음');
@@ -121,6 +129,8 @@ export function eventsToDays(events, from, to) {
       if (d < from || d > to) continue;
       const x = by.get(d) || { date: d, kind: defaultDayKind(d), on: true, events: [] };
       x.events.push({ title: ev.summary || '(제목 없음)', place: ev.location || '' });
+      // 일정 제목에 "야간"이 있으면 야간 근무로 (화면에서 바꿀 수 있음)
+      if (/야간/.test(ev.summary || '') && x.kind === 'weekday') x.kind = 'night';
       by.set(d, x);
     }
   }

@@ -7,8 +7,10 @@ import {
   EMP_KIND, DAY_KIND, wdName, dow, defaultDayKind, employees, empById, acctReady, setAccount, confirmAccount,
   runIdMonthly, runIdWeekly, runOf, monthlyPeriod, weekDays, weeksTouching, dayAmount, calcDaily, runAmounts,
   eventsToDays, payState, laborByMonth, closeOf, isClosedDate, closeMonth, reopenMonth, audit, deviceName, parseWageLedger,
+  cleanAcctNo, maskAcct,
 } from './payroll.js';
 import { render, toast } from './views.js';
+import { NS } from './env.js';
 
 const S = () => store.state;
 const tag = (t, cls = '') => `<span class="tag ${cls}">${esc(t)}</span>`;
@@ -50,7 +52,9 @@ function m16Tab(M) {
     if (amt) sub += amt.net; else waiting.push(e.name);
     const ps = amt ? payState(M, run, e) : null;
     const per = e.kind === 'monthlyDaily' ? monthlyPeriod(ym) : null;
-    const basis = e.kind === 'ledger' ? `임금대장 ${run?.attrYm ? fmtYM(run.attrYm) + ' 귀속' : '(귀속월 ?)'}` : `${fmtMD(per.from)}~${fmtMD(per.to)} 출근 × 일당`;
+    // 자료 상태 (파일 내려받음) — 급여 확정·실제 지급과 따로 표시
+    const pfFor = e.kind === 'ledger' ? live('payfiles').find(f => f.kind === 'ledger' && f.payYm === ym && f.status !== 'replaced' && f.rows.some(x => normName(x.name) === normName(e.name))) : null;
+    const basis = e.kind === 'ledger' ? `임금대장 ${run?.attrYm ? fmtYM(run.attrYm) + ' 귀속' : pfFor?.attrYm ? fmtYM(pfFor.attrYm) + ' 귀속' : ''} · ${pfFor ? (pfFor.status === 'applied' ? '파일 반영됨' : '파일 내려받음 (반영 전)') : '파일 없음'}` : `${fmtMD(per.from)}~${fmtMD(per.to)} 출근 × 일당`;
     const issues = run && run.status === 'draft' && e.kind === 'monthlyDaily' ? calcDaily(e, run).issues : run && run.status === 'draft' && run.net == null ? ['실지급액이 없음'] : [];
     return `<tr><td><b>${esc(e.name)}</b></td><td class="wrap">${esc(basis)}</td>
       <td class="nowrap">${mdw(payDate)}${run?.payDateChanged ? ' ' + tag('이번 달 변경') : ''}</td>
@@ -71,35 +75,143 @@ function m16Tab(M) {
     <div class="sumbar">확정 소계 <b>${won(sub)}</b>원${waiting.length ? ` · 미확정 ${waiting.length}명 (${waiting.map(esc).join(', ')}) — 지급 예정 합계에 넣지 않음` : list.length ? ' · 전원 확정' : ''}</div>
     ${list.length ? `<table class="tbl"><thead><tr><th>직원</th><th>계산 기준</th><th>지급일</th><th class="r">공제 전</th><th class="r">공제</th><th class="r">실지급</th><th>급여</th><th>지급 상태</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="muted">직원 관리에서 16일 급여 직원(임금대장 / 월 정산)을 등록하세요.</div>'}
   </section>
-  <section class="card"><h2>세무법인 임금대장 가져오기</h2>
-    <div class="hint">임금대장 엑셀을 직접 고르면 직원별 <b>차인지급액(실수령액)</b>을 가져옵니다. 임금명세서는 가져오지 않습니다. 같은 파일은 다시 넣지 않고, 이미 확정한 급여는 덮어쓰지 않습니다(변경 전후·차액만 표시).</div>
-    <div class="btns"><label class="btn primary">임금대장 엑셀 선택<input type="file" accept=".xls,.xlsx" data-chg="pyLedger" hidden></label></div>
-    ${pui.ledger ? ledgerPreview() : ''}
+  ${wageSection(M)}`;
+}
+
+// ───── 명안 급여자료 가져오기 (데스크톱용 구글 드라이브 "에스튜브 직원급여" 폴더, 읽기 전용) ─────
+// 상태는 셋으로 따로: ① 파일 내려받음(폴더에서 읽음) ② 급여 확정([급여 확정]) ③ 실제 지급(지급 확인·은행 대조)
+// 임금대장 → 차인지급액 미리보기 → [급여에 반영] → 직원별 [급여 확정]
+// 임금명세서 → 교부용 원본으로 목록에만 남김 (금액으로 다시 등록하지 않음, 발송하지 않음)
+// 원본 파일은 폴더에만 있고 장부·공개 저장소에 올리지 않음 (장부에는 읽은 금액만)
+const wdb = mode => fn => new Promise((res, rej) => {
+  const r = indexedDB.open('stube-wage' + NS, 1);
+  r.onupgradeneeded = () => r.result.createObjectStore('kv');
+  r.onerror = () => rej(r.error);
+  r.onsuccess = () => { const db = r.result, t = db.transaction('kv', mode), q = fn(t.objectStore('kv')); t.oncomplete = () => { db.close(); res(q && q.result); }; t.onerror = () => { db.close(); rej(t.error); }; };
+});
+const getWageDir = () => wdb('readonly')(s => s.get('dir')).catch(() => null);
+const setWageDir = h => wdb('readwrite')(s => s.put(h, 'dir'));
+
+export function wageNameInfo(name) {
+  const s = String(name).normalize('NFKC');
+  const kind = /명세서/.test(s) ? 'statement' : /임금대장|급여대장/.test(s) ? 'ledger' : '';
+  const a = s.match(/(20\d{2})\s*[.년\-_]?\s*(\d{1,2})\s*월\s*귀속/);
+  const p = s.match(/(\d{1,2})\s*월\s*지급/);
+  const attrYm = a ? `${a[1]}-${String(a[2]).padStart(2, '0')}` : '';
+  let payYm = '';
+  if (p && attrYm) { const am = +attrYm.slice(5), pm = +p[1], y = +attrYm.slice(0, 4); payYm = `${pm < am ? y + 1 : y}-${String(pm).padStart(2, '0')}`; }
+  return { kind, attrYm, payYm };
+}
+
+// files: [{ file, name, path }] → 장부의 payfiles 기록 (같은 파일은 0건)
+export async function readWageFiles(files) {
+  const known = new Set(live('payfiles').map(f => f.sha));
+  const r = { ledger: 0, statement: 0, dup: 0, other: 0, revisions: 0, ids: [] };
+  for (const f of files) {
+    if (!/\.(xlsx|xls)$/i.test(f.name)) { r.other++; continue; }
+    const buf = await f.file.arrayBuffer();
+    const d = await crypto.subtle.digest('SHA-256', buf);
+    const sha = [...new Uint8Array(d)].map(b => b.toString(16).padStart(2, '0')).join('');
+    if (known.has(sha)) { r.dup++; continue; }
+    const info = wageNameInfo(f.name);
+    let parsed = null, kind = info.kind;
+    if (kind !== 'statement') {
+      try {
+        const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
+        for (const sn of wb.SheetNames) { const p = parseWageLedger(XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, defval: '' })); if (!p.error) { parsed = p; break; } }
+      } catch { parsed = null; }
+      if (parsed) kind = 'ledger'; else if (kind === 'ledger') kind = 'ledgerBad'; else { r.other++; continue; }
+    }
+    const attrYm = parsed?.attrYm || info.attrYm;
+    const payYm = parsed?.payDate ? ymOf(parsed.payDate) : info.payYm;
+    const payDate = parsed?.payDate || (payYm ? `${payYm}-16` : ''); // 이 직원들의 지급일은 매월 16일
+    const prev = kind === 'ledger' ? live('payfiles').find(x => x.kind === 'ledger' && x.attrYm === attrYm && x.payYm === payYm && x.status !== 'replaced') : null;
+    const id = 'pf_' + sha.slice(0, 24);
+    const rows = parsed ? parsed.list.map(x => ({ name: x.name, net: x.net, gross: x.gross, deduction: x.deduction })) : [];
+    put('payfiles', { id, sha, name: f.name, path: f.path || '', kind, attrYm, payYm, payDate, rows, total: rows.reduce((s, x) => s + x.net, 0), seenAt: nowTs(), status: kind === 'statement' ? 'kept' : 'downloaded', revisionOf: prev ? prev.id : '' });
+    known.add(sha); r.ids.push(id);
+    if (kind === 'statement') r.statement++; else if (prev) r.revisions++; else r.ledger++;
+  }
+  if (r.ids.length) commit('payfiles');
+  return r;
+}
+const wageMsg = (r, n) => `엑셀 ${n}개 확인 → 새 임금대장 ${r.ledger}${r.revisions ? ` · 수정본 ${r.revisions}` : ''} · 임금명세서 ${r.statement} (교부용 보관) · 이미 읽은 파일 ${r.dup}${r.other ? ` · 급여자료 아님 ${r.other}` : ''}`;
+
+export async function scanWageDir(h) {
+  const files = [];
+  try {
+    for await (const [name, x] of h.entries()) {
+      if (x.kind === 'file' && /\.(xlsx|xls)$/i.test(name)) files.push({ file: await x.getFile(), name, path: '' });
+      else if (x.kind === 'directory') for await (const [n2, y] of x.entries()) if (y.kind === 'file' && /\.(xlsx|xls)$/i.test(n2)) files.push({ file: await y.getFile(), name: n2, path: name + '/' });
+    }
+  } catch (e) {
+    // 연결 오류를 "자료 없음"으로 보이지 않게 따로 표시
+    throw new Error('폴더 연결 오류: ' + (e.name === 'NotAllowedError' ? '읽기 권한이 없습니다 ([급여자료 폴더 선택]으로 다시 고르세요)' : e.name === 'NotFoundError' ? '폴더를 찾을 수 없습니다 (구글 드라이브가 꺼져 있거나 폴더가 옮겨짐)' : e.message));
+  }
+  const r = await readWageFiles(files);
+  return { r, n: files.length };
+}
+
+// 임금대장 한 파일의 직원별 처리 계획 (미리보기와 반영이 같은 계산을 씀)
+function wagePlan(pf) {
+  const emps = employees();
+  return pf.rows.map(x => {
+    const cands = emps.filter(e => normName(e.name) === normName(x.name));
+    const e = cands.length === 1 ? cands[0] : null;
+    if (!e) return { x, st: cands.length > 1 ? 'ambiguous' : 'unknown' };
+    if (e.kind !== 'ledger') return { x, e, st: 'dupcheck' };
+    const run = runOf(runIdMonthly(e.id, pf.payYm));
+    if (run && run.status === 'confirmed') return { x, e, run, st: run.net === x.net ? 'same' : 'changeConfirmed' };
+    if (run && run.status === 'draft' && run.net != null) return { x, e, run, st: run.net === x.net ? 'same' : 'changeDraft' };
+    return { x, e, run, st: 'new' };
+  });
+}
+
+function wageSection(M) {
+  void M;
+  const W = pui.wage || (pui.wage = { msg: '', err: '', busy: false, sel: '', dirName: '', dirLoaded: false });
+  if (!W.dirLoaded) { W.dirLoaded = true; getWageDir().then(h => { W.dirName = h ? h.name : ''; if (h) render(); }); }
+  const picker = 'showDirectoryPicker' in window;
+  const files = live('payfiles').sort((a, b) => ((b.payYm || '') + b.seenAt < (a.payYm || '') + a.seenAt ? -1 : 1)).slice(0, 20);
+  const stTag = f => f.kind === 'statement' ? tag('임금명세서 · 교부용 원본 보관 (금액으로 안 씀)', 'gray')
+    : f.kind === 'ledgerBad' ? tag('임금대장 형식을 못 읽음 — 확인 필요', 'red')
+    : f.status === 'applied' ? tag('급여에 반영됨', 'green') : f.status === 'replaced' ? tag('수정본으로 바뀜 (원본 보관)', 'gray')
+    : tag(f.revisionOf ? '수정본 — 직원별 변경 확인 필요' : '파일 내려받음 — 확인 전', 'amber');
+  const sel = W.sel && S().payfiles?.[W.sel];
+  return `<section class="card" id="wagesec"><div class="row-h"><h2>명안 급여자료 가져오기</h2><span class="muted">에스튜브 직원급여 폴더 (읽기 전용)</span></div>
+    <div class="hint">윈도우 탐색기의 <b>Google Drive → 내 드라이브 → 에스튜브 직원급여</b> 폴더를 고르세요. 앱은 읽기만 합니다 (원본을 옮기거나 바꾸지 않음). <b>임금대장</b>의 차인지급액만 급여로 쓰고, <b>임금명세서</b>는 교부용 원본으로만 남깁니다. 출근 기록 직원(월 정산·주급)은 캘린더 정산을 그대로 씁니다.</div>
+    <div class="btns">
+      ${picker ? `<button class="primary" data-act="wgPick" ${W.busy ? 'disabled' : ''}>급여자료 폴더 선택</button>` : ''}
+      ${picker && W.dirName ? `<button data-act="wgScan" ${W.busy ? 'disabled' : ''}>새 자료 확인</button> <span class="muted">연결된 폴더: ${esc(W.dirName)}</span>` : ''}
+      <label class="btn">Excel 파일 직접 선택<input type="file" accept=".xls,.xlsx" multiple data-chg="wgFiles" hidden></label>
+    </div>
+    ${W.busy ? '<div class="note">읽는 중…</div>' : ''}${W.err ? `<div class="errline">${esc(W.err)}</div>` : ''}${W.msg ? `<div class="okline">${esc(W.msg)}</div>` : ''}
+    ${files.length ? `<table class="tbl"><thead><tr><th>원본 파일명</th><th>귀속 / 지급</th><th class="r">차인지급액 합계</th><th>상태</th><th></th></tr></thead><tbody>
+      ${files.map(f => `<tr class="${f.status === 'replaced' ? 'dim' : ''}"><td class="wrap">${esc(f.path + f.name)}<div class="muted s">읽은 때 ${esc(f.seenAt)}</div></td>
+        <td class="nowrap">${f.attrYm ? fmtYM(f.attrYm) + ' 귀속' : '귀속 ?'} / ${f.payDate ? mdw(f.payDate) + ' 지급 예정' : '지급 ?'}</td>
+        <td class="r">${f.kind === 'ledger' ? won(f.total) + `<div class="muted s">${f.rows.length}명</div>` : ''}</td><td>${stTag(f)}</td>
+        <td class="act">${f.kind === 'ledger' && f.status === 'downloaded' ? `<button class="sm primary" data-act="wgSel" data-id="${f.id}">미리보기</button>` : ''}</td></tr>`).join('')}
+    </tbody></table>` : '<div class="muted">아직 읽은 급여자료가 없습니다.</div>'}
+    ${sel ? wagePreview(sel) : ''}
   </section>`;
 }
 
-function ledgerPreview() {
-  const L = pui.ledger;
-  const close = '<button class="sm ghost" data-act="pyLedgerCancel">닫기</button>';
-  if (L.error) return `<div class="errline">${esc(L.error)} ${close}</div>`;
-  if (L.dupFile) return `<div class="note">이미 가져온 파일입니다 (${esc(L.file)}). 다시 넣지 않았습니다. ${close}</div>`;
-  const emps = employees();
-  const rows = L.list.map(x => {
-    const cands = emps.filter(e => normName(e.name) === normName(x.name));
-    const e = cands.length === 1 ? cands[0] : null;
-    let st;
-    if (!e) st = tag(cands.length > 1 ? '같은 이름 직원 여러 명 — 확인' : '직원 목록에 없음 — 가져오지 않음', 'red');
-    else if (e.kind !== 'ledger') st = tag(`중복 확인: ${EMP_KIND[e.kind]} 직원 — 금액을 가져오지 않음`, 'amber');
-    else st = tag('가져옴', 'green');
-    return `<tr><td>${esc(x.name)}</td><td class="r">${x.gross != null ? won(x.gross) : '-'}</td><td class="r">${x.deduction != null ? won(x.deduction) : '-'}</td><td class="r"><b>${won(x.net)}</b></td><td>${st}</td></tr>`;
-  }).join('');
-  return `<div class="impgrid">
-      <div><span class="muted">파일</span><b>${esc(L.file)}</b></div>
-      <div><span class="muted">귀속월</span><input type="month" id="wl-attr" value="${L.attrYm || ''}">${L.attrYm ? '' : ' <span class="red">파일에서 못 읽음 — 직접 선택</span>'}</div>
-      <div><span class="muted">지급일</span><input type="date" id="wl-pay" value="${L.payDate || `${pui.ym}-16`}">${L.payDate ? ' (파일)' : ' (16일 기본)'}</div>
-    </div>
-    <table class="tbl"><thead><tr><th>성명</th><th class="r">지급총액</th><th class="r">공제총액</th><th class="r">차인지급액</th><th>처리</th></tr></thead><tbody>${rows}</tbody></table>
-    <div class="btns"><button class="primary" data-act="pyLedgerDo">임금대장 가져오기 (확정은 따로)</button><button class="ghost" data-act="pyLedgerCancel">취소</button></div>`;
+function wagePreview(pf) {
+  const plan = wagePlan(pf);
+  const label = { new: tag('새로 반영 (확정 전)', 'green'), same: tag('같은 금액', 'gray'), changeDraft: tag('변경', 'amber'), changeConfirmed: tag('확정된 급여와 다름 → 변경 자료로 따로 (다시 확인)', 'amber'), dupcheck: tag('중복 확인: 출근 기록 정산 직원 — 금액 안 가져옴', 'amber'), unknown: tag('직원 목록에 없음 — 안 가져옴', 'red'), ambiguous: tag('같은 이름 여러 명 — 확인', 'red') };
+  const take = plan.filter(p => p.st === 'new' || p.st === 'changeDraft' || p.st === 'same' || p.st === 'changeConfirmed');
+  const sum = take.reduce((s, p) => s + p.x.net, 0);
+  const old = pf.revisionOf && S().payfiles?.[pf.revisionOf];
+  return `<div class="card sub"><div class="row-h"><h3>미리보기 · ${esc(pf.name)}</h3><button class="sm ghost" data-act="wgSel" data-id="">닫기</button></div>
+    <div class="kv"><span>귀속 / 지급</span><b>${pf.attrYm ? fmtYM(pf.attrYm).replace(/^(\d+)년/, '20$1년') + ' 귀속' : '<span class="red">귀속월을 못 읽음</span>'} / ${pf.payDate ? mdw(pf.payDate) + ' 지급 예정' : '<span class="red">지급월을 못 읽음</span>'}</b></div>
+    ${old ? `<div class="hint">수정본입니다. 원본(${esc(old.name)}, ${esc(old.seenAt)})은 그대로 남깁니다.</div>` : ''}
+    <table class="tbl"><thead><tr><th>성명</th><th class="r">지급총액</th><th class="r">공제총액</th><th class="r">차인지급액</th><th class="r">변경 전</th><th>처리</th></tr></thead><tbody>
+      ${plan.map(p => `<tr><td>${esc(p.x.name)}</td><td class="r">${p.x.gross != null ? won(p.x.gross) : '-'}</td><td class="r">${p.x.deduction != null ? won(p.x.deduction) : '-'}</td><td class="r"><b>${won(p.x.net)}</b></td>
+        <td class="r">${p.run && p.run.net != null && p.run.net !== p.x.net ? `${won(p.run.net)}<div class="muted s">차액 ${won(p.x.net - p.run.net)}</div>` : ''}</td><td>${label[p.st]}</td></tr>`).join('')}
+      <tr class="sub"><td>반영 대상 ${take.length}명 합계</td><td></td><td></td><td class="r"><b>${won(sum)}</b></td><td></td><td></td></tr>
+    </tbody></table>
+    ${!pf.attrYm || !pf.payYm ? '<div class="errline">파일 이름이나 표에서 귀속월·지급월을 못 읽었습니다. 반영할 수 없습니다.</div>' : `<div class="btns"><button class="primary" data-act="wgApply" data-id="${pf.id}">${old ? '수정본 반영' : '급여에 반영'} (확정은 직원별 [급여 확정])</button></div>`}
+  </div>`;
 }
 
 function weeklyTab(M) {
@@ -130,21 +242,26 @@ function empsTab() {
   const list = live('employees').sort((a, b) => (a.order || 0) - (b.order || 0));
   const calOpts = cur => `<option value="">캘린더 선택</option>${(pui.cals || []).map(c => `<option value="${esc(c.id)}" ${c.id === cur ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}${cur && !(pui.cals || []).some(c => c.id === cur) ? `<option value="${esc(cur)}" selected>(연결된 캘린더)</option>` : ''}`;
   return `<section class="card"><div class="row-h"><h2>직원 관리</h2><button class="primary" data-act="pyEmpAdd">직원 추가</button></div>
-    <div class="hint">계좌는 <b>은행·예금주·끝 4자리만</b> 저장합니다 (전체 번호는 장부·드라이브에 저장하지 않음). 계좌를 새로 넣거나 바꾸면 [계좌 확인]을 눌러야 "이체 준비 완료"가 됩니다. 이름만으로 계좌를 자동 연결하지 않습니다.</div>
+    <div class="hint">계좌 번호는 대표님 구글 드라이브의 비공개 장부에만 저장되고, 화면에서는 가려서 보입니다 ([보기]·[복사]). 카톡용 정산표 그림에는 끝 4자리만 나옵니다. 계좌를 새로 넣거나 바꾸면 [계좌 확인]을 눌러야 "이체 준비 완료"가 됩니다. 이름만으로 계좌를 자동 연결하지 않습니다.</div>
     <div class="btns">${drive.calendar.connected() ? `${tag('구글 캘린더 연결됨 (읽기 전용)', 'green')} <button class="sm ghost" data-act="pyCalList">캘린더 목록 다시 읽기</button>` : '<button data-act="pyCalConnect">구글 캘린더 연결 (읽기 전용)</button>'}</div>
-    ${list.length ? `<table class="tbl"><thead><tr><th>이름 · ID</th><th>계산 기준</th><th>일당 (평일 / 토·일·휴일)</th><th>공제</th><th>출근 캘린더</th><th>계좌 (은행 / 예금주 / 끝 4자리)</th><th></th></tr></thead><tbody>
+    ${list.length ? `<table class="tbl"><thead><tr><th>이름 · ID</th><th>계산 기준</th><th>일당 (평일 / 토·일·휴일·야간)</th><th>공제</th><th>출근 캘린더</th><th>계좌 (은행 / 예금주 / 계좌 번호)</th><th></th></tr></thead><tbody>
     ${list.map(e => `<tr class="${e.active === false ? 'dim' : ''}">
       <td><input type="text" class="w8" value="${esc(e.name)}" data-chg="pyEmp" data-id="${e.id}" data-f="name"><div class="muted s">${esc(e.id)}</div></td>
       <td><select data-chg="pyEmp" data-id="${e.id}" data-f="kind">${Object.entries(EMP_KIND).map(([k, l]) => `<option value="${k}" ${e.kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select></td>
-      <td>${e.kind === 'ledger' ? '<span class="muted">임금대장 금액 사용</span>' : `<input type="text" inputmode="numeric" class="w8 r" value="${e.rates?.weekday ? won(e.rates.weekday) : ''}" placeholder="평일" data-chg="pyRate" data-id="${e.id}" data-f="weekday"> / <input type="text" inputmode="numeric" class="w8 r" value="${e.rates?.weekend ? won(e.rates.weekend) : ''}" placeholder="토·일·휴일" data-chg="pyRate" data-id="${e.id}" data-f="weekend">`}</td>
+      <td>${e.kind === 'ledger' ? '<span class="muted">임금대장 금액 사용</span>' : `<input type="text" inputmode="numeric" class="w8 r" value="${e.rates?.weekday ? won(e.rates.weekday) : ''}" placeholder="평일" data-chg="pyRate" data-id="${e.id}" data-f="weekday"> / <input type="text" inputmode="numeric" class="w8 r" value="${e.rates?.weekend ? won(e.rates.weekend) : ''}" placeholder="토·일·휴일·야간" data-chg="pyRate" data-id="${e.id}" data-f="weekend">`}</td>
       <td>${e.kind === 'ledger' ? '<span class="muted">임금대장 기준</span>' : `<select data-chg="pyDed" data-id="${e.id}"><option value="">선택</option><option value="none" ${e.deduct?.mode === 'none' ? 'selected' : ''}>공제 없음</option><option value="3.3" ${e.deduct?.mode === '3.3' ? 'selected' : ''}>3.3%</option><option value="fixed" ${e.deduct?.mode === 'fixed' ? 'selected' : ''}>정액 ${e.deduct?.mode === 'fixed' ? won(e.deduct.amount) + '원' : ''}</option></select>
         <label class="chk"><input type="checkbox" data-chg="pyDedOk" data-id="${e.id}" ${e.deduct?.confirmed ? 'checked' : ''}> 확인함</label>`}</td>
-      <td>${e.kind === 'ledger' ? '' : `<select data-chg="pyEmp" data-id="${e.id}" data-f="calId">${calOpts(e.calId)}</select><input type="text" class="w8" placeholder="제목에 들어간 말 (선택)" value="${esc(e.calKeyword || '')}" data-chg="pyEmp" data-id="${e.id}" data-f="calKeyword">`}</td>
-      <td class="nowrap"><input type="text" class="w6" placeholder="은행" value="${esc(e.bank || '')}" id="ac-b-${e.id}"> <input type="text" class="w6" placeholder="예금주" value="${esc(e.holder || '')}" id="ac-h-${e.id}"> <input type="text" class="w4" inputmode="numeric" maxlength="4" placeholder="끝4" value="${esc(e.last4 || '')}" id="ac-l-${e.id}">
+      <td>${e.kind === 'ledger' ? '' : `<select data-chg="pyEmp" data-id="${e.id}" data-f="calId">${calOpts(e.calId)}</select>`}</td>
+      <td><div class="acctbox">
+        <input type="text" class="w6" placeholder="은행" value="${esc(e.bank || '')}" id="ac-b-${e.id}">
+        <input type="text" class="w6" placeholder="예금주" value="${esc(e.holder || '')}" id="ac-h-${e.id}">
+        <input type="text" class="w12" inputmode="numeric" placeholder="계좌 번호" value="${pui.reveal?.has(e.id) || !e.acctNo ? esc(e.acctNo || '') : esc(maskAcct(e.acctNo))}" ${e.acctNo && !pui.reveal?.has(e.id) ? 'readonly title="[보기]를 누르면 고칠 수 있습니다"' : ''} id="ac-n-${e.id}">
         <button class="sm" data-act="pyAcctSave" data-id="${e.id}">저장</button>
+        ${e.acctNo ? `<button class="sm ghost" data-act="pyAcctView" data-id="${e.id}">${pui.reveal?.has(e.id) ? '가리기' : '보기'}</button><button class="sm ghost" data-act="pyAcctCopy" data-id="${e.id}">복사</button>` : ''}
+      </div>
         ${acctReady(e) ? tag('이체 준비 완료', 'green') : e.last4 ? `${tag('확인 전', 'amber')} <button class="sm primary" data-act="pyAcctOk" data-id="${e.id}">계좌 확인</button>` : tag('계좌 없음', 'gray')}
-        ${(e.acct?.history || []).length ? `<div class="muted s">이전 계좌 ${e.acct.history.length}개 기록</div>` : ''}</td>
-      <td class="act"><button class="sm ghost" data-act="pyEmpActive" data-id="${e.id}">${e.active === false ? '다시 사용' : '사용 안 함'}</button></td></tr>`).join('')}
+        ${(e.acct?.history || []).length ? `<span class="muted s"> 이전 계좌 ${e.acct.history.length}개 기록 (끝 4자리만)</span>` : ''}</td>
+      <td class="act">${e.active === false ? `${tag('사용 안 함 — 급여 목록에서 빠짐', 'red')}<button class="sm primary" data-act="pyEmpActive" data-id="${e.id}">다시 사용</button>` : `<button class="sm ghost" data-act="pyEmpActive" data-id="${e.id}">사용 안 함</button>`}</td></tr>`).join('')}
     </tbody></table>` : '<div class="muted">아직 등록된 직원이 없습니다.</div>'}
   </section>`;
 }
@@ -157,14 +274,14 @@ function xferTab(M) {
     const e = empById(r.empId) || {}; const ps = payState(M, r, e);
     const carried = r.payDate && r.payDate < `${ym}-01`;
     return `<tr><td>${esc(e.name || '?')}${carried ? ' ' + tag(`이월 · ${fmtYM(ymOf(r.payDate))} 지급분`, 'amber') : ''}<div class="muted s">${r.type === 'weekly' ? '주급' : '급여'} · ${r.payDate ? mdw(r.payDate) : '지급일 미정'}</div></td>
-      <td>${esc(e.bank || '-')}</td><td>${esc(e.holder || '-')}</td><td>${e.last4 ? '****' + esc(e.last4) : '-'} ${acctReady(e) ? tag('이체 준비 완료', 'green') : tag('계좌 확인 필요', 'red')}</td>
+      <td>${esc(e.bank || '-')}</td><td>${esc(e.holder || '-')}</td><td class="nowrap">${e.acctNo ? `${esc(maskAcct(e.acctNo))} <button class="sm ghost" data-act="pyAcctCopy" data-id="${e.id}">복사</button>` : e.last4 ? '****' + esc(e.last4) : '-'} ${acctReady(e) ? tag('이체 준비 완료', 'green') : tag('계좌 확인 필요', 'red')}</td>
       <td class="r"><b>${won(ps.remain ?? r.net)}</b>${ps.paid ? `<div class="muted s">전체 ${won(r.net)} 중 지급 ${won(ps.paid)}</div>` : ''}</td>
       <td>${tag(ps.label, { bank: 'green', user: 'blue', part: 'amber', unpaid: 'red', unverified: 'gray', due: '' }[ps.k] || '')}${ps.hint ? `<div class="hint">같은 금액 거래 ${fmtMD(ps.hint.date)} 있음 — 금액만 같아서 자동 확정하지 않음</div>` : ''}</td>
       <td class="act">${ps.k !== 'bank' && ps.k !== 'user' ? `<button class="sm" data-act="pyPaid" data-id="${r.id}">지급 확인</button>` : ''}${(r.paid || []).length ? `<button class="sm ghost" data-act="pyPaidUndo" data-id="${r.id}">지급 확인 취소</button>` : ''}</td></tr>`;
   }).join('');
   return `<section class="card"><h2>${fmtYM(ym)} 이체 확인표</h2>
-    <div class="hint">앱은 송금하지 않습니다. "지급 확인"은 대표님이 누른 확인, "은행 거래 대조 완료"는 통장 자료에서 예금주 이름과 금액이 확인된 것입니다. 계좌 전체 번호는 저장하지 않습니다 (끝 4자리만).</div>
-    ${runs.length ? `<table class="tbl"><thead><tr><th>직원명</th><th>은행</th><th>예금주</th><th>계좌 끝 4자리</th><th class="r">이체 금액</th><th>지급 상태</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="muted">이 달에 확정된 급여가 없습니다.</div>'}</section>`;
+    <div class="hint">앱은 송금하지 않습니다. "지급 확인"은 대표님이 누른 확인, "은행 거래 대조 완료"는 통장 자료에서 예금주 이름과 금액이 확인된 것입니다. 계좌 번호는 가려서 보이고 [복사]로 이체할 때 붙여넣을 수 있습니다.</div>
+    ${runs.length ? `<table class="tbl"><thead><tr><th>직원명</th><th>은행</th><th>예금주</th><th>계좌 번호</th><th class="r">이체 금액</th><th>지급 상태</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="muted">이 달에 확정된 급여가 없습니다.</div>'}</section>`;
 }
 
 function runDetail(M, id) {
@@ -212,7 +329,7 @@ export function sheetModel(run, e) {
     sub: `${payDate ? `${payDate.slice(0, 4)}년 ${Number(payDate.slice(5, 7))}월 지급` : '지급일 미정'}  |  근무내역 확인`,
     payDate: payDate ? `${Number(payDate.slice(5, 7))}월 ${Number(payDate.slice(8))}일 (${wdName(payDate)})` : '지급일 미정',
     period: run.period ? `${run.period.from.replaceAll('-', '.').slice(0, 4)}년 ${Number(run.period.from.slice(5, 7))}월 ${Number(run.period.from.slice(8))}일 (${wdName(run.period.from)}) ~ ${Number(run.period.to.slice(5, 7))}월 ${Number(run.period.to.slice(8))}일 (${wdName(run.period.to)})` : '',
-    rows: days.map(d => ({ date: `${Number(d.date.slice(5, 7))}월 ${Number(d.date.slice(8))}일`, wd: wdName(d.date), kind: d.kind === 'weekday' ? '평일 근무' : d.kind === 'custom' ? '별도 금액' : d.kind === 'half' ? '반일 근무' : d.kind === 'holiday' ? '휴일 근무 (1.5배)' : `${wdName(d.date)}요일 근무 (1.5배)`, amount: d.amount, note: d.note || (d.kind === 'weekend' || d.kind === 'holiday' ? '휴일 1.5배 적용' : d.kind === 'half' ? '반일' : ''), special: d.kind !== 'weekday' })),
+    rows: days.map(d => ({ date: `${Number(d.date.slice(5, 7))}월 ${Number(d.date.slice(8))}일`, wd: wdName(d.date), kind: d.kind === 'weekday' ? '평일 근무' : d.kind === 'custom' ? '별도 금액' : d.kind === 'half' ? '반일 근무' : d.kind === 'night' ? '야간 근무' : d.kind === 'holiday' ? '휴일 근무 (1.5배)' : `${wdName(d.date)}요일 근무 (1.5배)`, amount: d.amount, note: d.note || (d.kind === 'weekend' || d.kind === 'holiday' ? '휴일 1.5배 적용' : d.kind === 'night' ? '야간 단가 적용' : d.kind === 'half' ? '반일' : ''), special: d.kind !== 'weekday' })),
     days: days.length, gross: src.gross, deduction: src.deduction, net: src.net,
     dedLabel: e.deduct?.mode === '3.3' ? '3.3% 공제' : e.deduct?.mode === 'fixed' ? '공제' : '공제',
     basis, account: { bank: e.bank || '', holder: e.holder || '', last4: e.last4 || '' },
@@ -350,9 +467,8 @@ export function closeView(M) {
 // ───── 동작 ─────
 async function loadCal(e, from, to) {
   if (!e.calId) throw new Error('직원 관리에서 이 직원의 출근 캘린더를 먼저 고르세요');
-  const evs = await drive.calendar.events(e.calId, from, to);
-  const kw = normName(e.calKeyword || '');
-  return eventsToDays(kw ? evs.filter(x => normName((x.summary || '') + ' ' + (x.description || '')).includes(kw)) : evs, from, to);
+  // 직원마다 고른 캘린더의 일정을 모두 출근 후보로 (제목 필터 없음)
+  return eventsToDays(await drive.calendar.events(e.calId, from, to), from, to);
 }
 function sameDays(a, b) { const k = x => (x || []).filter(d => d.on !== false).map(d => d.date + d.kind + (d.amount || '')).join('|'); return k(a) === k(b); }
 
@@ -369,17 +485,29 @@ export function extendPayUI({ ACT, CHG }) {
       put('employees', { id: 'emp_' + uid(''), name: name.trim(), kind, rates, deduct: {}, bank: '', holder: '', last4: '', acct: { status: 'unverified', history: [] }, active: true, order: live('employees').length + 1, calId: '', calKeyword: '' });
       commit('emp');
     },
-    pyEmpActive: el => { const e = empById(el.dataset.id) || S().employees[el.dataset.id]; patch('employees', e.id, { active: e.active === false }); commit('emp'); },
+    pyEmpActive: el => {
+      const e = S().employees[el.dataset.id];
+      if (e.active !== false && !confirm(`${e.name}을(를) "사용 안 함"으로 할까요? 급여·주급 목록에서 빠집니다 (기록은 지우지 않음).`)) return;
+      patch('employees', e.id, { active: e.active === false }); commit('emp');
+    },
     pyAcctSave: el => {
       const id = el.dataset.id, v = k => document.getElementById(`ac-${k}-${id}`).value.trim();
-      const last4 = v('l');
-      if (last4 && !/^\d{4}$/.test(last4)) { toast('계좌는 끝 4자리 숫자만 넣어주세요 (전체 번호는 저장하지 않습니다)'); return; }
       const before = S().employees[id];
-      setAccount(id, { bank: v('b'), holder: v('h'), last4 });
+      const inp = document.getElementById(`ac-n-${id}`);
+      // 가려진 상태(읽기 전용)면 계좌 번호는 그대로 두고 은행·예금주만 저장
+      const no = inp.readOnly ? (before.acctNo || '') : cleanAcctNo(inp.value);
+      if (no && no.replace(/\D/g, '').length < 8) { toast('계좌 번호를 숫자로 끝까지 넣어주세요 (- 넣어도 됨)'); return; }
+      setAccount(id, { bank: v('b'), holder: v('h'), acctNo: no });
+      pui.reveal?.delete(id);
       commit('emp');
-      if (before.last4 !== last4 || before.bank !== v('b') || before.holder !== v('h')) toast('계좌가 바뀌어 "확인 전"이 됐습니다. 맞으면 [계좌 확인]을 누르세요');
+      if ((before.acctNo || '') !== no || before.bank !== v('b') || before.holder !== v('h')) toast('계좌가 바뀌어 "확인 전"이 됐습니다. 맞으면 [계좌 확인]을 누르세요');
     },
-    pyAcctOk: el => { if (!confirm('은행·예금주·끝 4자리를 직원에게 직접 확인하셨나요? 확인하면 "이체 준비 완료"가 됩니다.')) return; if (confirmAccount(el.dataset.id)) { commit('emp'); } else toast('은행·예금주·끝 4자리를 모두 넣어주세요'); },
+    pyAcctView: el => { pui.reveal ||= new Set(); const id = el.dataset.id; if (pui.reveal.has(id)) pui.reveal.delete(id); else pui.reveal.add(id); render(); },
+    pyAcctCopy: async el => {
+      const e = empById(el.dataset.id);
+      try { await navigator.clipboard.writeText(e.acctNo || ''); toast(`${e.name} 계좌 번호를 복사했습니다`); } catch { toast('복사하지 못했습니다. [보기]를 눌러 직접 확인하세요'); }
+    },
+    pyAcctOk: el => { if (!confirm('은행·예금주·계좌 번호를 직원에게 직접 확인하셨나요? 확인하면 "이체 준비 완료"가 됩니다.')) return; if (confirmAccount(el.dataset.id)) { commit('emp'); } else toast('은행·예금주·계좌 번호를 모두 넣어주세요'); },
     pyCalConnect: async () => {
       try { await drive.calendar.connect(); pui.cals = await drive.calendar.list(); toast('구글 캘린더를 읽기 전용으로 연결했습니다. 직원마다 출근 캘린더를 고르세요'); }
       catch (e) { toast(e.message === 'API_OFF' ? '구글 클라우드에서 Calendar API를 켜야 합니다 (설정 안내 참고)' : '캘린더 연결 실패: ' + e.message); if (e.message === 'API_OFF') window.open(drive.CAL_API_URL, '_blank', 'noopener'); }
@@ -456,32 +584,48 @@ export function extendPayUI({ ACT, CHG }) {
     },
     pyPaidUndo: el => { const run = runOf(el.dataset.id); if (closedBlock(run.payDate)) return; if (confirm('지급 확인 기록을 지울까요?')) { patch('payruns', run.id, { paid: [] }); commit('pay'); } },
     pyPreview: el => { showSheet(el.dataset.id); },
-    pyLedgerDo: () => {
-      const L = pui.ledger; if (!L || L.error || L.dupFile) return;
-      const attrYm = document.getElementById('wl-attr').value, payDate = document.getElementById('wl-pay').value;
-      if (!attrYm) { toast('귀속월을 골라주세요 (파일에서 못 읽음)'); return; }
-      if (!payDate) { toast('지급일을 넣어주세요'); return; }
-      const payYm = ymOf(payDate);
-      if (closedBlock(payDate)) return;
-      const emps = employees();
-      let added = 0, revised = 0, same = 0;
-      for (const x of L.list) {
-        const cands = emps.filter(e => normName(e.name) === normName(x.name));
-        if (cands.length !== 1 || cands[0].kind !== 'ledger') continue;
-        const e = cands[0], id = runIdMonthly(e.id, payYm), run = runOf(id);
-        const src = { kind: 'ledger', file: L.file, sha: L.sha, row: x.row };
-        if (run && run.status === 'confirmed') {
-          if (run.net === x.net) { same++; continue; }
-          patch('payruns', id, { pending: { net: x.net, gross: x.gross, deduction: x.deduction, src, reason: `임금대장 수정본 (${L.file})` } }); revised++;
-        } else {
-          put('payruns', { ...(run || {}), id, empId: e.id, type: 'monthly', payYm, attrYm, payDate: run?.payDateChanged ? run.payDate : payDate, gross: x.gross, deduction: x.deduction, net: x.net, status: 'draft', src }); added++;
-        }
-      }
-      put('imports', { id: 'wage_' + L.sha.slice(0, 20), at: nowTs(), file: L.file, type: 'wage', sha: L.sha, attrYm, from: payDate, to: payDate, rows: L.list.length, added, dup: same, updated: revised, ok: true });
-      pui.ledger = null; commit('pay');
-      toast(`임금대장: ${added}명 가져옴 (확정은 [급여 확정]으로)${revised ? ` · 확정된 ${revised}명은 변경 자료로 따로 표시` : ''}${same ? ` · 같은 금액 ${same}명` : ''}`);
+    // ── 명안 급여자료 (폴더 읽기 전용) ──
+    wgPick: async () => {
+      const W = pui.wage; W.busy = true; W.err = ''; render();
+      try {
+        const h = await window.showDirectoryPicker({ id: 'stube-wage', mode: 'read' });
+        await setWageDir(h); W.dirName = h.name;
+        const { r, n } = await scanWageDir(h); W.msg = wageMsg(r, n);
+      } catch (e) { if (e.name !== 'AbortError') { W.err = e.message.startsWith('폴더 연결 오류') ? e.message : '폴더 연결 오류: ' + e.message; W.msg = ''; } }
+      finally { W.busy = false; render(); }
     },
-    pyLedgerCancel: () => { pui.ledger = null; render(); },
+    wgScan: async () => {
+      const W = pui.wage; W.busy = true; W.err = ''; render();
+      try {
+        const h = await getWageDir();
+        if (!h) throw new Error('폴더 연결 오류: 연결된 폴더가 없습니다 ([급여자료 폴더 선택])');
+        let p = await h.queryPermission({ mode: 'read' });
+        if (p === 'prompt') p = await h.requestPermission({ mode: 'read' });
+        if (p !== 'granted') throw new Error('폴더 연결 오류: 읽기 권한이 끊겼습니다. [급여자료 폴더 선택]으로 다시 고르세요');
+        const { r, n } = await scanWageDir(h); W.msg = wageMsg(r, n);
+      } catch (e) { W.err = e.message.startsWith('폴더 연결 오류') ? e.message : '폴더 연결 오류: ' + e.message; W.msg = ''; }
+      finally { W.busy = false; render(); }
+    },
+    wgSel: el => { pui.wage.sel = el.dataset.id; render(); },
+    wgApply: el => {
+      const pf = S().payfiles[el.dataset.id];
+      if (!pf || closedBlock(pf.payDate)) return;
+      const plan = wagePlan(pf);
+      let n = 0, ch = 0, pend = 0;
+      for (const p of plan) {
+        if (!p.e || p.st === 'dupcheck' || p.st === 'unknown' || p.st === 'ambiguous') continue;
+        const id = runIdMonthly(p.e.id, pf.payYm), run = runOf(id);
+        const src = { kind: 'ledger', file: pf.name, sha: pf.sha, pfId: pf.id };
+        if (p.st === 'new') { put('payruns', { ...(run || {}), id, empId: p.e.id, type: 'monthly', payYm: pf.payYm, attrYm: pf.attrYm, payDate: run?.payDateChanged ? run.payDate : pf.payDate, gross: p.x.gross, deduction: p.x.deduction, net: p.x.net, status: 'draft', src }); n++; }
+        else if (p.st === 'changeDraft') { patch('payruns', id, { gross: p.x.gross, deduction: p.x.deduction, net: p.x.net, src, revisions: [...(run.revisions || []), { at: nowTs(), before: run.net, after: p.x.net, reason: `명안 임금대장 수정본 (${pf.name})` }] }); ch++; }
+        else if (p.st === 'changeConfirmed') { patch('payruns', id, { pending: { net: p.x.net, gross: p.x.gross, deduction: p.x.deduction, src, reason: `명안 임금대장 수정본 (${pf.name})` } }); pend++; }
+        else if (p.st === 'same') patch('payruns', id, { src });
+      }
+      if (pf.revisionOf && S().payfiles[pf.revisionOf]) patch('payfiles', pf.revisionOf, { status: 'replaced' });
+      patch('payfiles', pf.id, { status: 'applied', appliedAt: nowTs() });
+      pui.wage.sel = ''; commit('pay');
+      toast(`급여에 반영: 새로 ${n}명${ch ? ` · 변경 ${ch}명 (다시 확정 필요)` : ''}${pend ? ` · 확정된 ${pend}명은 변경 자료로 따로 (확인 후 [변경 반영])` : ''}. 확정은 직원별 [급여 확정]`);
+    },
     clDo: () => {
       const ym = pui.closeYm, M = model(), x = closeSummary(M, ym);
       const warn = [x.unconfirmed.length && `미확정 급여 ${x.unconfirmed.length}명`, x.remain && `남은 급여 ${won(x.remain)}원`, x.recv.length && `미수 ${x.recv.length}건`, x.pay.length && `미지급 ${x.pay.length}건`, x.autoMissing.length && `자동출금 미확인 ${x.autoMissing.length}건`, x.gaps.length && `은행 자료 누락 ${x.gaps.length}곳`, x.breaks.length && `잔액 차이 ${x.breaks.length}곳`].filter(Boolean);
@@ -520,19 +664,12 @@ export function extendPayUI({ ACT, CHG }) {
     pyDayKind: el => { const run = runOf(el.dataset.id); const days = [...run.days]; const cur = days[+el.dataset.i]; days[+el.dataset.i] = { ...cur, kind: el.value, halfOf: el.value === 'half' ? (defaultDayKind(cur.date) === 'weekday' ? 'weekday' : 'weekend') : undefined, amount: el.value === 'custom' ? cur.amount : undefined }; patch('payruns', run.id, { days, daysChecked: false }); commit('pay'); },
     pyDayAmt: el => { const run = runOf(el.dataset.id); const n = parseWonInput(el.value); if (!(n > 0)) { toast('금액을 숫자로'); return; } const days = [...run.days]; days[+el.dataset.i] = { ...days[+el.dataset.i], amount: n }; patch('payruns', run.id, { days, daysChecked: false }); commit('pay'); },
     pyDayNote: el => { const run = runOf(el.dataset.id); const days = [...run.days]; days[+el.dataset.i] = { ...days[+el.dataset.i], note: el.value.trim() }; patch('payruns', run.id, { days }); commit('pay'); },
-    pyLedger: async el => {
-      const f = el.files[0]; el.value = ''; if (!f) return;
-      try {
-        const buf = await f.arrayBuffer();
-        const d = await crypto.subtle.digest('SHA-256', buf);
-        const sha = [...new Uint8Array(d)].map(b => b.toString(16).padStart(2, '0')).join('');
-        if (live('imports').some(i => i.type === 'wage' && i.sha === sha)) { pui.ledger = { file: f.name, dupFile: true }; render(); return; }
-        const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
-        let res = null;
-        for (const sn of wb.SheetNames) { const r = parseWageLedger(XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, defval: '' })); if (!r.error) { res = r; break; } res = r; }
-        pui.ledger = { ...res, file: f.name, sha };
-      } catch (e) { pui.ledger = { error: '파일을 읽지 못했습니다: ' + e.message }; }
-      render();
+    wgFiles: async el => {
+      const W = pui.wage; const files = [...el.files].map(f => ({ file: f, name: f.name, path: '' })); el.value = '';
+      W.busy = true; W.err = ''; render();
+      try { const r = await readWageFiles(files); W.msg = wageMsg(r, files.length); }
+      catch (e) { W.err = '파일을 읽지 못했습니다: ' + e.message; }
+      finally { W.busy = false; render(); }
     },
   });
 }
