@@ -7,9 +7,13 @@ import { todayStr } from './util.js';
 
 export const CLIENT_ID = '711459099361-rfju41tpoln0vekrvc5sf81be7m1dtoo.apps.googleusercontent.com';
 const SCOPE = 'https://www.googleapis.com/auth/drive.file';
+import { SANDBOX, NS } from './env.js';
+
 const FILE_NAME = 'stube-ledger-data.json';
-const FOLDER_NAME = '에스튜브 경리 앱 데이터';
-const META_KEY = 'stube-ledger-sync';
+// 테스트 장부는 다른 폴더를 써서 실제 장부 파일을 절대 건드리지 않습니다.
+const FOLDER_NAME = '에스튜브 경리 앱 데이터' + (SANDBOX ? ` (테스트 ${SANDBOX})` : '');
+const META_KEY = 'stube-ledger-sync' + NS;
+export const APP_VERSION = '2';
 const DRIVE = 'https://www.googleapis.com/drive/v3/files';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files';
 
@@ -132,7 +136,7 @@ async function updateFile(id, content) {
   return r.json();
 }
 
-let running = null, again = false, timer = null;
+let running = null, again = false, timer = null, recheck = false, rechecks = 0;
 export function scheduleSync() {
   if (!token) return;
   clearTimeout(timer);
@@ -142,8 +146,22 @@ export function scheduleSync() {
 export function syncNow() {
   if (!token) { if (meta.connected) emit('needLogin'); return Promise.resolve(); }
   if (running) { again = true; return running; }
-  running = doSync().finally(() => { running = null; if (again) { again = false; syncNow(); } });
+  running = doSync().finally(() => {
+    running = null;
+    if (recheck && rechecks < 3) { recheck = false; rechecks++; again = true; } else { recheck = false; rechecks = 0; }
+    if (again) { again = false; return syncNow(); }
+  });
   return running;
+}
+
+// 진행 중인 저장(다시 확인 포함)이 모두 끝날 때까지 기다림
+export async function whenIdle() { while (running) await running; }
+
+// 자동 테스트 전용 (localhost의 테스트 장부에서만 동작): 가짜 로그인 토큰
+export function __testLogin() {
+  if (!SANDBOX || location.hostname !== 'localhost') return false;
+  token = 'test'; tokenExp = Date.now() + 3600e3; meta.connected = true; writeMeta();
+  return true;
 }
 
 async function doSync() {
@@ -159,10 +177,16 @@ async function doSync() {
     if (!file) file = await findFile(FILE_NAME, null, folderId);
     if (!file) {
       const created = await createFile(FILE_NAME, folderId, JSON.stringify(store.state));
-      meta.fileId = created.id; meta.version = String(created.version);
+      meta.fileId = created.id; meta.version = String(created.version); meta.appVer = APP_VERSION;
       store.dirty = false;
     } else {
       meta.fileId = file.id;
+      // 앱이 새 버전으로 바뀐 뒤 처음 저장하기 전에, 드라이브에 있던 장부를 그대로 따로 보관합니다 (되돌리기용).
+      if (meta.appVer !== APP_VERSION) {
+        const raw = await (await api(`${DRIVE}/${file.id}?alt=media`)).text();
+        await createFile(`backup-before-v${APP_VERSION}-${todayStr()}.json`, folderId, raw);
+        meta.appVer = APP_VERSION; writeMeta();
+      }
       let needUpload = store.dirty;
       if (String(file.version) !== String(meta.version)) {
         const r = await api(`${DRIVE}/${file.id}?alt=media`);
@@ -176,6 +200,9 @@ async function doSync() {
         store.dirty = false;
         const up = await updateFile(file.id, JSON.stringify(store.state));
         meta.version = String(up.version);
+        // 올린 직후 다시 확인: 그 사이 다른 기기가 올렸으면 한 번 더 받아서 합칩니다 (한쪽 기록이 덮이지 않게).
+        const chk = await (await api(`${DRIVE}/${file.id}?fields=version`)).json();
+        if (String(chk.version) !== meta.version) recheck = true;
       }
     }
     writeMeta();
@@ -192,7 +219,8 @@ async function doSync() {
 async function dailyBackup(folderId) {
   const today = todayStr();
   if (meta.backupDay === today) return;
-  await createFile(`backup-${today}.json`, folderId, JSON.stringify(store.state));
+  // 다른 기기가 오늘 백업을 이미 만들었으면 또 만들지 않음
+  if (!(await findFile(`backup-${today}.json`, null, folderId))) await createFile(`backup-${today}.json`, folderId, JSON.stringify(store.state));
   meta.backupDay = today; writeMeta();
   const q = `name contains 'backup-' and '${folderId}' in parents and trashed=false`;
   const r = await api(`${DRIVE}?q=${encodeURIComponent(q)}&fields=files(id,name)&orderBy=name desc&pageSize=200`);

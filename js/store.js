@@ -1,8 +1,11 @@
 // 데이터 저장소: 이 기기(localStorage)에 먼저 저장하고, 구글 드라이브와 동기화합니다.
 // 모든 기록은 u(수정 시각)를 가지고, 두 기기의 자료를 합칠 때 더 최근 것을 씁니다.
 
-const KEY = 'stube-ledger-v1';
-const DIRTY_KEY = 'stube-ledger-dirty';
+import { NS } from './env.js';
+
+// 테스트 장부(?test=)는 다른 칸에 저장해서 실제 장부와 섞이지 않습니다.
+const KEY = 'stube-ledger-v1' + NS;
+const DIRTY_KEY = 'stube-ledger-dirty' + NS;
 
 export const COLS = ['accounts', 'txns', 'manual', 'invoices', 'plans', 'recurring', 'imports', 'decisions', 'aliases'];
 
@@ -29,7 +32,7 @@ function normalize(s) {
   for (const c of COLS) s[c] = s[c] || e[c];
   s.settings = { ...e.settings, ...(s.settings || {}) };
   for (const a of Object.values(e.accounts)) if (!s.accounts[a.id]) s.accounts[a.id] = a;
-  s.schema = 1;
+  s.schema = Math.max(Number(s.schema) || 1, 1);
   return s;
 }
 
@@ -99,10 +102,14 @@ export function live(col) {
 
 // 두 자료 합치기: 기록마다 더 최근(u가 큰) 것을 고릅니다.
 // aWins: a(이 기기)에서만 있거나 더 최신인 기록 수 → 드라이브에 다시 올려야 하는지 판단
+// 이 버전이 모르는 묶음(나중 버전에서 추가된 자료)도 버리지 않고 그대로 합칩니다.
+const isCol = (o, k) => k !== 'settings' && o[k] && typeof o[k] === 'object' && !Array.isArray(o[k]);
 export function merge(a, b) {
   const out = emptyState();
   let aWins = 0;
-  for (const c of COLS) {
+  const cols = new Set([...COLS, ...Object.keys(a).filter(k => isCol(a, k)), ...Object.keys(b).filter(k => isCol(b, k))]);
+  for (const c of cols) {
+    out[c] ||= {};
     const A = a[c] || {}, B = b[c] || {};
     const keys = new Set([...Object.keys(A), ...Object.keys(B)]);
     for (const k of keys) {
