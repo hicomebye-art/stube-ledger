@@ -24,7 +24,19 @@ render();
 drive.init();
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
-  navigator.serviceWorker.register('sw.js').catch(() => {});
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    // 앱을 켜 둔 채로 있어도 다시 볼 때마다 새 버전이 있는지 확인
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+  }).catch(() => {});
+  // 새 버전이 들어오면 화면을 새로 불러옴 (지출을 적는 중이면 다 적고 나간 뒤에)
+  let reloading = false, waiting = false;
+  const reload = () => { if (!reloading) { reloading = true; location.reload(); } };
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController) return; // 처음 설치될 때는 새로고침하지 않음
+    if (location.hash === '#m-add') waiting = true; else reload();
+  });
+  window.addEventListener('hashchange', () => { if (waiting && location.hash !== '#m-add') reload(); });
 }
 
 // 개발 확인용 (localhost에서만)

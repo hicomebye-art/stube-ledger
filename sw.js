@@ -1,5 +1,5 @@
 // 오프라인에서도 앱 화면이 열리도록 앱 파일만 보관합니다. (장부 자료와 구글 통신은 보관하지 않음)
-const CACHE = 'stube-ledger-v3';
+const CACHE = 'stube-ledger-v3-1';
 const SCOPE = new URL(self.registration.scope).pathname;
 const SHELL = ['./', 'index.html', 'css/app.css', 'js/main.js', 'js/env.js', 'js/util.js', 'js/jobs.js', 'js/jobs-ui.js', 'js/evidence.js', 'js/store.js', 'js/engine.js', 'js/parsers.js', 'js/importer.js', 'js/drive.js', 'js/views.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
 const CDN = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
@@ -20,8 +20,9 @@ self.addEventListener('fetch', e => {
   const u = new URL(e.request.url);
   const mine = u.origin === location.origin && u.pathname.startsWith(SCOPE);
   if (!mine && u.href !== CDN) return;
+  // 앱 파일은 매번 서버에 새 버전이 있는지 확인 (브라우저에 남은 예전 파일을 쓰지 않음)
   e.respondWith(
-    fetch(e.request).then(r => {
+    fetch(e.request, mine ? { cache: 'no-cache' } : undefined).then(r => {
       if (r.ok) { const cp = r.clone(); caches.open(CACHE).then(c => c.put(e.request, cp)); }
       return r;
     }).catch(() => caches.match(e.request, { ignoreSearch: true }).then(r => r || caches.match('index.html')))

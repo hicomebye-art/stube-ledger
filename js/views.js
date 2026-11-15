@@ -5,7 +5,7 @@ import { esc, won, todayStr, addDays, dayDiff, uid, nowTs, parseWonInput, ymOf, 
 import { parseFile } from './parsers.js';
 import { commitImport, previewCounts, BANK_TO_ACCT } from './importer.js';
 import * as drive from './drive.js';
-import { SANDBOX, NS } from './env.js';
+import { SANDBOX, NS, BUILD } from './env.js';
 import { extendUI, costAddView, jobsView } from './jobs-ui.js';
 import { costModel, dupCosts, costUsing } from './jobs.js';
 
@@ -132,6 +132,7 @@ function shell(route, M) {
     <aside class="side">
       ${NAV.map(([id, label]) => `<a href="#${id}" class="${route === id ? 'on' : ''}">${label}${id === 'review' && open ? ` <span class="badge">${open}</span>` : ''}</a>`).join('')}
       <a href="#m" class="sub">핸드폰 화면</a>
+      <div class="muted s" style="padding:8px 12px">앱 버전 ${BUILD}</div>
     </aside>
     <main id="main">${view(M)}</main>
   </div>`;
@@ -791,6 +792,7 @@ function mobile(route, M) {
     ${M.manual.filter(m => !m.linkTxn).length ? `<section class="mcard"><h2>최근 지출 기록</h2>${M.manual.filter(m => !m.linkTxn).sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 8).map(m => `<div class="mrow"><span class="d">${fmtMD(m.date)}</span><span class="t">${esc(acctName(M, m.acct))} ${esc(m.memo || '')}</span><span class="num out">-${won(m.amount)}</span></div>`).join('')}</section>` : ''}
     ${open ? `<div class="note">검토할 항목 ${open}건 · PC에서 확인하세요</div>` : ''}
     <a class="mlink" href="#home">PC 화면 (전체 메뉴)</a>
+    <div class="muted s" style="text-align:center;margin:8px 0">앱 버전 ${BUILD}</div>
   </div>`;
 }
 
