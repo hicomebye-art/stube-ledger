@@ -182,6 +182,18 @@ export async function uploadBlob(blob, name) {
 }
 export async function downloadBlob(id) { return (await api(`${DRIVE}/${id}?alt=media`)).blob(); }
 
+// 사진 글자 읽기: 구글 드라이브의 글자 인식(사진 → 구글 문서 변환)을 써서 글자만 받아오고, 임시 문서는 바로 지웁니다.
+// 추가 가입·비용 없음. 대표님 드라이브 안에서만 처리됩니다.
+export async function ocrImage(blob) {
+  const folderId = await ensureEvidFolder();
+  const b = 'ocr' + Math.random().toString(36).slice(2);
+  const meta1 = JSON.stringify({ name: 'ocr-temp-' + Date.now(), mimeType: 'application/vnd.google-apps.document', parents: [folderId] });
+  const body = new Blob([`--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta1}\r\n--${b}\r\nContent-Type: ${blob.type || 'image/jpeg'}\r\n\r\n`, blob, `\r\n--${b}--`]);
+  const { id } = await (await api(`${UPLOAD}?uploadType=multipart&ocrLanguage=ko&fields=id`, { method: 'POST', headers: { 'Content-Type': `multipart/related; boundary=${b}` }, body })).json();
+  try { return await (await api(`${DRIVE}/${id}/export?mimeType=text/plain`)).text(); }
+  finally { api(`${DRIVE}/${id}`, { method: 'DELETE' }).catch(() => {}); }
+}
+
 // 진행 중인 저장(다시 확인 포함)이 모두 끝날 때까지 기다림
 export async function whenIdle() { while (running) await running; }
 

@@ -4,6 +4,50 @@ import { model } from './engine.js';
 import { esc, won, todayStr, addDays, parseWonInput, fmtMD, uid, nowTs } from './util.js';
 import { CAT, EVK, partyList, ensureParty, newParty, siteList, newSite, jobList, newJob, jobLabel, costBase, paidOf, reconOf, costUsing, dupCosts, similarCosts, costModel, itemSummary, searchJobs, newCostId } from './jobs.js';
 import { addEvidence, evidenceUrl } from './evidence.js';
+import { readPhoto } from './ocr.js';
+import { hasToken } from './drive.js';
+
+// 사진 글자 읽기 → 빈 칸만 채움 (이미 적은 값은 덮어쓰지 않음)
+async function runOcr(f) {
+  const a = jui.add;
+  if (!f || !/^image\//.test(f.file.type)) return;
+  if (!hasToken()) { a.ocr = { err: '구글 드라이브에 연결돼 있어야 사진 글자를 읽을 수 있습니다' }; render(); return; }
+  a.ocr = { busy: true }; render();
+  try {
+    const r = await readPhoto(f.file);
+    if (jui.add !== a) return; // 그 사이 화면을 나감
+    const filled = [];
+    if (r.total != null && !a.amount) { a.amount = String(r.total); filled.push('금액'); }
+    if (r.date && !a.dateSet) { a.date = r.date; filled.push('날짜'); }
+    if (r.vendor && !a.vendor.trim()) { a.vendor = r.vendor; filled.push('지급처'); }
+    if (r.supply != null && String(a.supply).trim() === '') { a.supply = String(r.supply); a.showTax = true; filled.push('공급가'); }
+    if (r.vat != null && String(a.vat).trim() === '') { a.vat = String(r.vat); a.showTax = true; filled.push('부가세'); }
+    if (r.kind === 'transfer' && f.kind === 'receipt') f.kind = 'transfer';
+    // 증빙만 붙이기: 읽은 금액과 같은 비용·통장 출금을 미리 골라둠
+    if (a.mode === 'attach' && r.total != null && !a.attachTo) {
+      const M = model();
+      const c = live('costs').find(x => x.total === r.total);
+      const t = !c && M.txns.find(x => x.out === r.total && x.date >= addDays(todayStr(), -40) && !costUsing(M, { txnId: x.id }));
+      if (c) a.attachTo = 'c:' + c.id; else if (t) a.attachTo = 't:' + t.id;
+    }
+    a.ocr = { res: r, filled };
+  } catch (e) { a.ocr = { err: e.message === 'NEED_LOGIN' ? '구글 연결이 풀렸습니다. 위의 [다시 연결]을 누르세요' : '사진 글자를 읽지 못했습니다: ' + e.message }; }
+  render();
+}
+
+function ocrBox(a) {
+  const o = a.ocr;
+  if (!o) return '';
+  if (o.busy) return `<div class="ocrbox">🔎 사진 글자 읽는 중… (몇 초 걸립니다)</div>`;
+  if (o.err) return `<div class="ocrbox bad">${esc(o.err)}</div>`;
+  const r = o.res;
+  const v = (l, x) => `<span>${l} <b>${x != null && x !== '' ? esc(x) : '<span class="muted">못 읽음</span>'}</b></span>`;
+  return `<div class="ocrbox"><div><b>사진에서 읽은 값</b> — 맞는지 꼭 확인하세요${o.filled.length ? ` (채운 칸: ${o.filled.join(', ')})` : ' (이미 적은 칸은 그대로 둠)'}</div>
+    <div class="ocrvals">${v('날짜', r.date ? fmtMD(r.date) : '')}${v('상대', r.vendor)}${v('합계', r.total != null ? won(r.total) : '')}${v('공급가', r.supply != null ? won(r.supply) : '')}${v('부가세', r.vat != null ? won(r.vat) : '')}${r.biz ? v('사업자', r.biz) : ''}</div>
+    ${r.dir === 'in' ? '<div class="errline">입금 화면 같습니다. 비용(나간 돈)이 아니면 저장하지 마세요.</div>' : ''}
+    ${r.warn.length ? `<div class="hint">${r.warn.map(esc).join(' · ')}</div>` : ''}
+    <button type="button" class="link" data-act="caOcrText">${a.showOcrText ? '▾' : '▸'} 읽은 글자 전체 보기</button>${a.showOcrText ? `<pre class="ocrtext">${esc(r.text)}</pre>` : ''}</div>`;
+}
 import { render, toast } from './views.js';
 
 const S = () => store.state;
@@ -30,7 +74,8 @@ function photoBlock(a) {
       <label class="pbtn">📷 촬영<input type="file" accept="image/*" capture="environment" data-chg="caFiles" hidden></label>
       <label class="pbtn">🖼 갤러리<input type="file" accept="image/*,application/pdf" multiple data-chg="caFiles" hidden></label>
     </div>
-    ${a.files.length ? `<div class="thumbs">${a.files.map((f, i) => `<span class="thumb">${f.url ? `<img src="${f.url}" alt="">` : '📄'}<small>${EVK[f.kind]}</small><button type="button" data-act="caRm" data-i="${i}" aria-label="빼기">×</button></span>`).join('')}</div>` : ''}`;
+    ${a.files.length ? `<div class="thumbs">${a.files.map((f, i) => `<span class="thumb">${f.url ? `<img src="${f.url}" alt="">` : '📄'}<small>${EVK[f.kind]}</small><button type="button" data-act="caRm" data-i="${i}" aria-label="빼기">×</button>${f.url ? `<button type="button" class="ocrbtn" data-act="caOcr" data-i="${i}" title="이 사진 글자 읽기">🔎</button>` : ''}</span>`).join('')}</div>` : ''}
+    ${ocrBox(a)}`;
 }
 
 // ───── 핸드폰: 지출·증빙 기록 ─────
@@ -53,6 +98,7 @@ export function costAddView(M) {
   }
   const n = parseWonInput(a.amount || '0');
   return `<section class="mcard add">${tabs}
+    ${photoBlock(a)}
     <div class="amtdisp">${a.amount ? won(n) : '0'}<span>원</span></div>
     <div class="pad">${['1', '2', '3', '4', '5', '6', '7', '8', '9', '00', '0', '←'].map(k => `<button data-act="caNp" data-k="${k}">${k}</button>`).join('')}</div>
     <div class="lbl">어디서 나갔나요?</div>
@@ -63,7 +109,6 @@ export function costAddView(M) {
     <div class="stack">${partySel(M, a, 'caSel')}</div>
     <input type="text" id="ca-vendor" placeholder="지급처 (가게·사람 이름)" value="${esc(a.vendor)}" data-inp="caF" data-f="vendor">
     <textarea id="ca-note" rows="2" placeholder="비고 (예: 센서용 스터드 2개 추가 구매)" data-inp="caF" data-f="note">${esc(a.note)}</textarea>
-    ${photoBlock(a)}
     <div class="fold"><button type="button" class="link" data-act="caTog" data-k="showTax">${a.showTax ? '▾' : '▸'} 공급가·부가세 나누기 (영수증·계산서에 적혀 있을 때만)</button>
       ${a.showTax ? `<div class="row2"><input type="text" id="ca-supply" inputmode="numeric" placeholder="공급가" value="${esc(a.supply)}" data-inp="caF" data-f="supply"><input type="text" id="ca-vat" inputmode="numeric" placeholder="부가세" value="${esc(a.vat)}" data-inp="caF" data-f="vat"></div><div class="hint">안 보이거나 모르면 비워두세요. 짐작해서 넣지 않습니다 → "부가세 구분 안 됨"으로 저장.</div>` : ''}</div>
     <div class="fold"><button type="button" class="link" data-act="caTog" data-k="showItems">${a.showItems ? '▾' : '▸'} 자재 품목 적기 (품명·수량·단가)${a.items.length ? ` · ${a.items.length}개` : ''}</button>
@@ -186,6 +231,8 @@ export function extendUI({ ACT, CHG, INP }) {
     caTog: el => { A()[el.dataset.k] = !A()[el.dataset.k]; if (el.dataset.k === 'showItems' && A().showItems && !A().items.length) A().items.push({ name: '', qty: '', unit: '', price: '' }); render(); },
     caItemAdd: () => { A().items.push({ name: '', qty: '', unit: '', price: '' }); render(); },
     caItemRm: el => { A().items.splice(+el.dataset.i, 1); render(); },
+    caOcr: el => { runOcr(A().files[+el.dataset.i]); },
+    caOcrText: () => { A().showOcrText = !A().showOcrText; render(); },
     caRm: el => { const f = A().files.splice(+el.dataset.i, 1)[0]; if (f && f.url) URL.revokeObjectURL(f.url); render(); },
     caSave: async () => {
       const a = A(), M = model();
@@ -303,11 +350,15 @@ export function extendUI({ ACT, CHG, INP }) {
     caSel: el => { if (pickHier(model(), A(), el)) render(); },
     njSel: el => { jui.newJob ||= { partyId: '', siteId: '', jobId: '' }; if (pickHier(model(), jui.newJob, el)) render(); },
     caFiles: el => {
-      for (const f of el.files) A().files.push({ file: f, kind: A().kind, url: /^image\//.test(f.type) ? URL.createObjectURL(f) : '' });
+      const added = [];
+      for (const f of el.files) { const x = { file: f, kind: A().kind, url: /^image\//.test(f.type) ? URL.createObjectURL(f) : '' }; A().files.push(x); added.push(x); }
       el.value = ''; render();
+      // 첫 사진이면 바로 글자를 읽어 빈 칸을 채움
+      const first = added.find(x => x.url);
+      if (first && !A().ocr?.res) runOcr(first);
     },
     caAttachTo: el => { A().attachTo = el.value; },
-    caDate: el => { A().date = el.value; },
+    caDate: el => { A().date = el.value; A().dateSet = true; },
     caPersonal: el => { A().personal = el.checked; },
     caItemDone: () => render(),
     jPer: el => { jui.jobs[el.dataset.f] = el.value; render(); },
