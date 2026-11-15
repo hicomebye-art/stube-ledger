@@ -196,3 +196,29 @@ tr.done td { color: var(--muted); }
 .syncbar.bad { background: #fdecea; color: #b71c1c; font-weight: 600; }
 .syncbar.warn { background: #fff4e5; color: #8a5300; }
 .syncbar.ok { background: #e8f5e9; color: #1b5e20; font-size: 12px; padding: 4px 14px; }
+
+/* 지출·증빙 기록 (핸드폰) */
+.add .lbl { font-size: 13px; color: var(--text-2); margin: 12px 0 6px; }
+.pills.seg { margin-bottom: 8px; }
+.pills.seg .pill { flex: 1; }
+.add .stack { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.add .stack select, .add textarea, .add input[type=text] { width: 100%; box-sizing: border-box; margin-bottom: 6px; }
+.photos { display: flex; gap: 8px; margin: 6px 0; }
+.pbtn { flex: 1; text-align: center; padding: 12px 0; border: 1px dashed var(--line); border-radius: 10px; background: #fafafa; font-weight: 600; cursor: pointer; }
+.thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
+.thumb { position: relative; width: 72px; text-align: center; font-size: 11px; color: var(--text-2); }
+.thumb img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; display: block; }
+.thumb button { position: absolute; top: -6px; right: -6px; width: 22px; height: 22px; border-radius: 11px; border: 0; background: #b71c1c; color: #fff; padding: 0; line-height: 22px; }
+.fold { margin: 8px 0; }
+.fold .link { font-size: 14px; }
+.item { display: flex; gap: 4px; align-items: center; margin-bottom: 6px; }
+.item input { min-width: 0; flex: 1; }
+.item .w4 { flex: 0 0 52px; }
+.item .num { min-width: 64px; text-align: right; font-size: 13px; }
+/* 증빙 보기 */
+#evmodal { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 100; display: flex; align-items: center; justify-content: center; padding: 16px; }
+#evmodal .evbox { background: #fff; border-radius: 12px; padding: 14px; max-width: 900px; width: 100%; max-height: 90vh; overflow: auto; }
+#evmodal img { max-width: 100%; border-radius: 8px; }
+#evmodal figure { margin: 0 0 12px; }
+#evmodal figcaption { font-size: 12px; color: var(--text-2); }
+.tbl tr.on td { background: #eef5f2; }

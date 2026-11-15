@@ -6,6 +6,8 @@ import { parseFile } from './parsers.js';
 import { commitImport, previewCounts, BANK_TO_ACCT } from './importer.js';
 import * as drive from './drive.js';
 import { SANDBOX, NS } from './env.js';
+import { extendUI, costAddView, jobsView } from './jobs-ui.js';
+import { costModel, dupCosts, costUsing } from './jobs.js';
 
 // 카카오톡·네이버 앱 안의 브라우저에서는 구글 로그인이 막힙니다 → 크롬으로 열도록 안내
 const UA = navigator.userAgent || '';
@@ -50,7 +52,7 @@ const ui = {
 };
 
 const NAV = [
-  ['home', '홈'], ['import', '자료 넣기'], ['ledger', '통합 장부'], ['review', '검토'], ['plan', '자금 계획'],
+  ['home', '홈'], ['import', '자료 넣기'], ['ledger', '통합 장부'], ['review', '검토'], ['plan', '자금 계획'], ['jobs', '작업·원가'],
   ['invoices', '세금계산서'], ['cards', '카드 사용'], ['recurring', '고정 지출'], ['partners', '거래처'], ['settings', '설정'],
 ];
 
@@ -171,7 +173,7 @@ function occTags(o) {
 }
 
 function dpRow(M, o, compact) {
-  const canCheck = o.src !== 'vat' && o.src !== 'inv';
+  const canCheck = o.src !== 'vat' && o.src !== 'inv' && o.src !== 'cost';
   if (canCheck) ui.occ.set(o.key, o);
   const ck = canCheck ? `<input type="checkbox" data-chg="occDone" data-key="${esc(o.key)}" ${o.done ? 'checked' : ''} ${o.doneBy === 'bank' || o.doneBy === 'invoice' ? 'disabled' : ''} aria-label="${o.kind === 'in' ? '입금 확인' : '완료'}">` : '<span class="ckph"></span>';
   const when = o.noDate ? (o.wdate ? `계산서 ${fmtMD(o.wdate)}` : '날짜 없음') : fmtMD(o.date);
@@ -208,6 +210,9 @@ function checkItems(M) {
     ['미수금 (매출 계산서 입금 안 보임)', n('unpaidSales'), '#review'],
     ['미지급 (매입 계산서 송금 안 보임)', n('unpaidPurchase'), '#review'],
     ['잔액이 이어지지 않는 곳', n('balance'), '#review'],
+    ['미분류 증빙·비용 (작업 안 정함)', costModel(M).unalloc.length, '#jobs'],
+    ['같은 돈이 원가에 두 번 잡힘', dupCosts(M).length, '#jobs'],
+    ['내 통장 이체인지 확인할 것', n('xfer'), '#review'],
   ].filter(x => x[1]);
   const cov = M.accounts.map(a => { const e = lastCovered(M, a.id); return `${esc(a.name)} ${e ? fmtMD(e) + '까지' : '자료 없음'}`; }).join(' · ');
   return { items, cov };
@@ -467,12 +472,12 @@ function ledgerRow(M, t) {
   return `<tr class="${f.cancel ? 'dim' : ''}"><td class="nowrap">${tsLabel(t)}</td><td>${esc(acctName(M, t.acct))}</td>
     <td>${esc(t.desc)} ${tags}${t.note ? `<div class="hint">${esc(t.note)}</div>` : ''}</td>
     <td class="r">${t.in ? amt(t.in, 'in') : ''}</td><td class="r">${t.out ? amt(t.out, 'out') : ''}</td><td class="r muted">${won(t.bal)}</td>
-    <td class="act"><button class="sm ghost" data-act="txPersonal" data-id="${t.id}">${t.personal ? '사업으로' : '개인'}</button><button class="sm ghost" data-act="txNote" data-id="${t.id}">메모</button></td></tr>`;
+    <td class="act">${t.out > 0 && !f.transfer && !f.cancel ? (costUsing(M, { txnId: t.id }) ? tag('원가', 'green') : `<button class="sm ghost" data-act="txCost" data-id="${t.id}" title="작업 원가로 등록">원가</button>`) : ''}<button class="sm ghost" data-act="txPersonal" data-id="${t.id}">${t.personal ? '사업으로' : '개인'}</button><button class="sm ghost" data-act="txNote" data-id="${t.id}">메모</button></td></tr>`;
 }
 
 function manualRow(M, m) {
   return `<tr class="manual"><td class="nowrap">${fmtMD(m.date)}</td><td>${esc(acctName(M, m.acct))}</td>
-    <td>${esc(m.memo || '(메모 없음)')} ${tag('핸드폰 기록', 'blue')}${m.personal ? tag('개인', 'amber') : ''}<div class="hint">통장 자료가 들어오면 같은 거래와 합칩니다</div></td>
+    <td>${esc(m.memo || '(메모 없음)')} ${tag('핸드폰 기록', 'blue')}${m.costId ? tag('원가', 'green') : ''}${m.personal ? tag('개인', 'amber') : ''}<div class="hint">통장 자료가 들어오면 같은 거래와 합칩니다</div></td>
     <td></td><td class="r">${amt(m.amount, 'out')}</td><td></td>
     <td class="act"><button class="sm ghost" data-act="manDel" data-id="${m.id}">삭제</button></td></tr>`;
 }
@@ -646,7 +651,7 @@ VIEWS.invoices = M => {
     <div class="hint">홈택스 전자세금계산서만으로 계산한 값입니다. 카드 매입 공제, 가산세 등은 빠져 있어 실제 신고액과 다를 수 있습니다.</div></section>` : ''}
   <div class="sumbar">${list.length}장 · 공급가액 ${won(sum('supply'))} · 세액 ${won(sum('tax'))} · 합계 <b>${won(sum('total'))}</b></div>
   <table class="tbl"><thead><tr><th>작성일</th><th>거래처</th><th>품목·비고</th><th class="r">공급가액</th><th class="r">세액</th><th class="r">합계</th><th>상태</th><th></th></tr></thead><tbody>
-  ${list.map(i => `<tr><td class="nowrap">${fmtMD(i.wdate)}</td><td>${esc(i.name)}</td><td class="wrap muted">${esc([i.item, i.note].filter(Boolean).join(' / '))}</td><td class="r">${won(i.supply)}</td><td class="r">${won(i.tax)}</td><td class="r">${won(i.total)}</td><td>${status(i)}</td><td class="act">${act(i)}</td></tr>`).join('')}
+  ${list.map(i => `<tr><td class="nowrap">${fmtMD(i.wdate)}</td><td>${esc(i.name)}</td><td class="wrap muted">${esc([i.item, i.note].filter(Boolean).join(' / '))}</td><td class="r">${won(i.supply)}</td><td class="r">${won(i.tax)}</td><td class="r">${won(i.total)}</td><td>${status(i)}</td><td class="act">${act(i)}${i.kind === 'purchase' && M.inv.st[i.id].state !== 'corr' ? (costUsing(M, { invoiceId: i.id }) ? tag('원가', 'green') : `<button class="sm ghost" data-act="invCost" data-id="${esc(i.id)}" title="작업 원가로 등록">원가</button>`) : ''}</td></tr>`).join('')}
   </tbody></table>`;
 };
 
@@ -761,6 +766,8 @@ VIEWS.settings = M => {
   </section>`;
 };
 
+VIEWS.jobs = M => jobsView(M);
+
 VIEWS.work = () => `
   <h1>업무관리</h1>
   <section class="card"><h2>2단계에서 옮겨옵니다</h2>
@@ -770,12 +777,12 @@ VIEWS.work = () => `
 // ───────── 핸드폰 화면 ─────────
 function mobile(route, M) {
   const head = `<header class="mtop"><a href="#m" class="brand">S-TUBE 경리</a><span id="msync">${syncBadge()}</span></header>`;
-  if (route === 'm-add') return `<div class="m">${head}${mobileAdd(M)}</div>`;
+  if (route === 'm-add') return `<div class="m">${head}${costAddView(M)}</div>`;
   ui.occ.clear();
   const open = M.review.filter(x => !x.dismissed).length;
   return `<div class="m">${head}
-    <a class="mbtn" href="#m-add">+ 지출 기록</a>
-    <h2 class="msect">오늘 할 일</h2>
+    <div class="row2"><a class="mbtn" href="#m-add" data-act="mAdd" data-m="new">+ 지출·증빙 기록</a><a class="mbtn ghost" href="#m-add" data-act="mAdd" data-m="attach">📎 증빙만 붙이기</a></div>
+    <h2 class="msect">오늘 할 일 <span class="muted s">(받을 돈은 체크하면 입금 확인)</span></h2>
     ${todayPanel(M, true)}
     <section class="mcard">
       <div class="muted">통장 잔액 합계</div><div class="big">${won(M.totalEst)}원</div>
@@ -1034,6 +1041,8 @@ const CHG = {
   addDate: el => { ui.add.date = el.value; },
   addPersonal: el => { ui.add.personal = el.checked; },
 };
+
+extendUI({ ACT, CHG, INP });
 
 export function initUI() {
   const root = document.getElementById('app');

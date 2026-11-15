@@ -504,6 +504,11 @@ export function dayPlan(S, M, from, to, opts = {}) {
     const o = { key: 'inv:' + i.id, src: 'inv', invoiceId: i.id, date: '', wdate: i.wdate, kind: i.kind === 'sales' ? 'in' : 'out', amount: s.eff, remain: s.remain, paid: s.paid, partial: s.state === 'partial' ? 'invoice' : '', title: i.name + (i.note ? ' · ' + i.note : ''), noDate: true, done: false };
     (o.kind === 'in' ? r.recvNoDate : r.needDate).push(o);
   }
+  // 외상으로 산 비용 (계산서 없이 핸드폰에서 "아직 안 냄"으로 적은 것) → 지급일 확인 필요
+  for (const c of live('costs')) {
+    if (c.pay !== 'unpaid' || c.invoiceId || (!S.settings.includePersonal && c.personal)) continue;
+    r.needDate.push({ key: 'cost:' + c.id, src: 'cost', costId: c.id, date: '', wdate: c.date, kind: 'out', amount: c.total, title: `${c.vendor || c.note || '외상 비용'} (외상)`, noDate: true, done: false });
+  }
   r.recvNoDate.sort((a, b) => ((a.wdate || '') < (b.wdate || '') ? -1 : 1));
   r.needDate.sort((a, b) => ((a.wdate || '') < (b.wdate || '') ? -1 : 1));
   const open = a => a.filter(o => !o.done).reduce((s, o) => s + left(o), 0);

@@ -13,7 +13,7 @@ const FILE_NAME = 'stube-ledger-data.json';
 // 테스트 장부는 다른 폴더를 써서 실제 장부 파일을 절대 건드리지 않습니다.
 const FOLDER_NAME = '에스튜브 경리 앱 데이터' + (SANDBOX ? ` (테스트 ${SANDBOX})` : '');
 const META_KEY = 'stube-ledger-sync' + NS;
-export const APP_VERSION = '2';
+export const APP_VERSION = '3';
 const DRIVE = 'https://www.googleapis.com/drive/v3/files';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files';
 
@@ -143,7 +143,7 @@ async function updateFile(id, content) {
   return r.json();
 }
 
-let running = null, again = false, timer = null, recheck = false, rechecks = 0;
+let running = null, again = false, timer = null;
 export function scheduleSync() {
   if (!token) return;
   clearTimeout(timer);
@@ -155,11 +155,32 @@ export function syncNow() {
   if (running) { again = true; return running; }
   running = doSync().finally(() => {
     running = null;
-    if (recheck && rechecks < 3) { recheck = false; rechecks++; again = true; } else { recheck = false; rechecks = 0; }
     if (again) { again = false; return syncNow(); }
   });
   return running;
 }
+
+// ───── 증빙 사진 (장부 폴더 안 "증빙 사진" 폴더, 대표님 드라이브에 비공개) ─────
+export const hasToken = () => !!token && Date.now() < tokenExp;
+const EVID_FOLDER = '증빙 사진';
+async function ensureEvidFolder() {
+  const parent = await ensureFolder();
+  if (meta.evidFolderId) {
+    try { const f = await (await api(`${DRIVE}/${meta.evidFolderId}?fields=id,trashed`)).json(); if (!f.trashed) return f.id; }
+    catch (e) { if (e.message === 'NEED_LOGIN') throw e; }
+  }
+  let f = await findFile(EVID_FOLDER, 'application/vnd.google-apps.folder', parent);
+  if (!f) f = await (await api(`${DRIVE}?fields=id`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: EVID_FOLDER, mimeType: 'application/vnd.google-apps.folder', parents: [parent] }) })).json();
+  meta.evidFolderId = f.id; writeMeta();
+  return f.id;
+}
+export async function uploadBlob(blob, name) {
+  const folderId = await ensureEvidFolder();
+  const { id } = await (await api(`${DRIVE}?fields=id`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, parents: [folderId], mimeType: blob.type || 'application/octet-stream' }) })).json();
+  await api(`${UPLOAD}/${id}?uploadType=media&fields=id`, { method: 'PATCH', headers: { 'Content-Type': blob.type || 'application/octet-stream' }, body: blob });
+  return id;
+}
+export async function downloadBlob(id) { return (await api(`${DRIVE}/${id}?alt=media`)).blob(); }
 
 // 진행 중인 저장(다시 확인 포함)이 모두 끝날 때까지 기다림
 export async function whenIdle() { while (running) await running; }
@@ -171,46 +192,54 @@ export function __testLogin() {
   return true;
 }
 
+// 기기마다 자기 파일(stube-ledger-dev-기기번호.json)에만 씁니다.
+// 읽을 때는 폴더의 모든 장부 파일(예전 공용 파일 포함)을 받아서 합칩니다.
+// → 두 기기가 동시에 저장해도 서로의 파일을 덮어쓸 수 없으므로 한쪽 기록이 사라지지 않습니다.
+let DEV = '';
+function devId() {
+  if (DEV) return DEV;
+  const k = 'stube-ledger-dev' + NS;
+  try { DEV = localStorage.getItem(k) || ''; } catch { DEV = ''; }
+  if (!/^[0-9a-z]{6,12}$/.test(DEV)) { DEV = Math.random().toString(36).slice(2, 10).padEnd(8, '0'); try { localStorage.setItem(k, DEV); } catch { /* 저장 불가 */ } }
+  return DEV;
+}
+const myName = () => `stube-ledger-dev-${devId()}.json`;
+const isLedgerFile = n => n === FILE_NAME || /^stube-ledger-dev-[0-9a-z]+\.json$/.test(n);
+
 async function doSync() {
   if (!navigator.onLine) { emit('offline'); return; }
   emit('syncing');
   try {
     const folderId = await ensureFolder();
-    let file = null;
-    if (meta.fileId) {
-      try { const r = await api(`${DRIVE}/${meta.fileId}?fields=id,version,trashed`); file = await r.json(); if (file.trashed) file = null; }
-      catch (e) { if (e.message === 'NEED_LOGIN') throw e; file = null; }
+    const q = `name contains 'stube-ledger-' and '${folderId}' in parents and trashed=false`;
+    const list = ((await (await api(`${DRIVE}?q=${encodeURIComponent(q)}&fields=files(id,name,version)&pageSize=200`)).json()).files || []).filter(f => isLedgerFile(f.name));
+    const mine = list.find(f => f.name === myName());
+    meta.seen = meta.seen || {};
+    // 새 버전으로 바뀐 뒤 처음: 예전 공용 장부 파일을 그대로 따로 보관 (되돌리기용)
+    if (meta.appVer !== APP_VERSION) {
+      const main = list.find(f => f.name === FILE_NAME);
+      const bname = `backup-before-v${APP_VERSION}-${todayStr()}.json`;
+      if (main && !(await findFile(bname, null, folderId))) await createFile(bname, folderId, await (await api(`${DRIVE}/${main.id}?alt=media`)).text());
+      meta.appVer = APP_VERSION; writeMeta();
     }
-    if (!file) file = await findFile(FILE_NAME, null, folderId);
-    if (!file) {
-      const created = await createFile(FILE_NAME, folderId, JSON.stringify(store.state));
-      meta.fileId = created.id; meta.version = String(created.version); meta.appVer = APP_VERSION;
+    // 바뀐 파일만 받기
+    const remotes = [];
+    for (const f of list) {
+      if (String(meta.seen[f.id]) === String(f.version)) continue;
+      remotes.push({ f, data: await (await api(`${DRIVE}/${f.id}?alt=media`)).json() });
+    }
+    // 받는 동안 이 기기에서 고친 것도 살리도록, 합치기는 지금 상태에 바로 합니다
+    if (remotes.length) {
+      let st = store.state;
+      for (const r of remotes) { st = merge(st, r.data).state; meta.seen[r.f.id] = String(r.f.version); }
+      replaceState(st, 'remote');
+    }
+    // 내 파일 올리기 (이 기기만 쓰는 파일)
+    if (store.dirty || !mine) {
       store.dirty = false;
-    } else {
-      meta.fileId = file.id;
-      // 앱이 새 버전으로 바뀐 뒤 처음 저장하기 전에, 드라이브에 있던 장부를 그대로 따로 보관합니다 (되돌리기용).
-      if (meta.appVer !== APP_VERSION) {
-        const raw = await (await api(`${DRIVE}/${file.id}?alt=media`)).text();
-        await createFile(`backup-before-v${APP_VERSION}-${todayStr()}.json`, folderId, raw);
-        meta.appVer = APP_VERSION; writeMeta();
-      }
-      let needUpload = store.dirty;
-      if (String(file.version) !== String(meta.version)) {
-        const r = await api(`${DRIVE}/${file.id}?alt=media`);
-        const remote = await r.json();
-        const { state, aWins } = merge(store.state, remote);
-        replaceState(state, 'remote');
-        needUpload = needUpload || aWins > 0;
-        meta.version = String(file.version);
-      }
-      if (needUpload) {
-        store.dirty = false;
-        const up = await updateFile(file.id, JSON.stringify(store.state));
-        meta.version = String(up.version);
-        // 올린 직후 다시 확인: 그 사이 다른 기기가 올렸으면 한 번 더 받아서 합칩니다 (한쪽 기록이 덮이지 않게).
-        const chk = await (await api(`${DRIVE}/${file.id}?fields=version`)).json();
-        if (String(chk.version) !== meta.version) recheck = true;
-      }
+      const body = JSON.stringify(store.state);
+      const up = mine ? await updateFile(mine.id, body) : await createFile(myName(), folderId, body);
+      meta.seen[up.id || mine.id] = String(up.version);
     }
     writeMeta();
     await dailyBackup(folderId);

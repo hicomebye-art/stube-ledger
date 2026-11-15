@@ -3,6 +3,7 @@ import * as drive from './drive.js';
 import { render, renderSync, initUI, debug } from './views.js';
 import { parseFile } from './parsers.js';
 import { commitImport } from './importer.js';
+import { flushQueue } from './evidence.js';
 
 store.state = loadLocal();
 initUI();
@@ -16,7 +17,7 @@ store.listeners.add(reason => {
   if (reason !== 'remote') drive.scheduleSync();
 });
 document.addEventListener('focusout', () => { if (pending) { pending = false; setTimeout(render, 0); } });
-drive.onSync(renderSync);
+drive.onSync(() => { renderSync(); if (drive.sync.status === 'ok') flushQueue(); });
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 
 render();
