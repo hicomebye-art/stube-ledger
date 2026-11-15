@@ -8,7 +8,7 @@ const KEY = 'stube-ledger-v1' + NS;
 const DIRTY_KEY = 'stube-ledger-dirty' + NS;
 
 // parties 거래처, sites 현장, jobs 작업건, costs 원가(비용), evid 증빙 사진 정보
-export const COLS = ['accounts', 'txns', 'manual', 'invoices', 'plans', 'recurring', 'imports', 'decisions', 'aliases', 'parties', 'sites', 'jobs', 'costs', 'evid', 'taxdocs'];
+export const COLS = ['accounts', 'txns', 'manual', 'invoices', 'plans', 'recurring', 'imports', 'decisions', 'aliases', 'parties', 'sites', 'jobs', 'costs', 'evid', 'taxdocs', 'employees', 'payruns', 'closes', 'audit'];
 
 // 계좌번호·이름 같은 개인정보는 코드에 넣지 않습니다. (설정 화면에서 입력 → 드라이브에만 저장)
 const DEFAULT_ACCOUNTS = [

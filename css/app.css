@@ -229,3 +229,7 @@ tr.done td { color: var(--muted); }
 .ocrvals { display: flex; flex-wrap: wrap; gap: 6px 12px; margin: 6px 0; }
 .ocrtext { white-space: pre-wrap; font-size: 11px; max-height: 200px; overflow: auto; background: #fff; padding: 6px; border-radius: 6px; }
 .thumb .ocrbtn { position: absolute; bottom: 18px; left: -6px; width: 26px; height: 26px; border-radius: 13px; border: 0; background: #2f5d50; color: #fff; padding: 0; font-size: 13px; }
+
+/* 정산표 미리보기 */
+.sheetwrap { text-align: center; background: #f3f4f6; padding: 10px; border-radius: 8px; }
+.sheetwrap canvas { box-shadow: 0 1px 6px rgba(0,0,0,.15); background: #fff; }

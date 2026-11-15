@@ -3,6 +3,7 @@
 import { store, live } from './store.js';
 import { todayStr, addDays, dayDiff, normName, nameMatch, ymOf, addMonths, daysInMonth } from './util.js';
 import { taxStates } from './tax.js';
+import { payState } from './payroll.js';
 
 const CARD_RE = /체크|카드|IC직불|현금IC|정정/;
 const cmpTx = (a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : (a.ord || 0) - (b.ord || 0));
@@ -442,6 +443,22 @@ export function occurrences(S, M, from, to) {
       if (date <= to) out.push(o);
     }
   }
+  // 확정한 급여·주급 (확정 전 급여는 지급 예정 합계에 넣지 않음)
+  for (const r of live('payruns')) {
+    if (r.status !== 'confirmed' || !(r.net > 0)) continue;
+    const e = S.employees?.[r.empId];
+    const ps = payState(M, r, e);
+    const o = {
+      key: 'pay:' + r.id, src: 'pay', runId: r.id, date: r.payDate || '', kind: 'out', amount: r.net,
+      title: `${r.type === 'weekly' ? '주급' : '급여'} ${e && !e.deleted ? e.name : ''}`.trim(), acct: '', cat: 'salary', personal: false,
+      pay: 'direct', conf: '', bankName: '', done: ps.k === 'bank' || ps.k === 'user', doneBy: ps.k === 'bank' ? 'paybank' : ps.k === 'user' ? 'user' : '',
+      noDate: !r.payDate, overdue: false,
+    };
+    if (ps.k === 'part') { o.paid = ps.paid; o.remain = ps.remain; o.partial = 'pay'; }
+    if (o.noDate) { if (!o.done) out.push(o); }
+    else if (o.date >= from && o.date <= to) out.push(o);
+    else if (o.date < from && !o.done) out.push({ ...o, overdue: true, chk: ps.k === 'unverified' ? 'unverified' : ps.k === 'unpaid' ? 'missing' : undefined });
+  }
   for (const p of vatPeriods(S, M)) {
     if (p.est > 0 && p.due >= from && p.due <= to) out.push({ key: 'vat:' + p.key, src: 'vat', date: p.due, kind: 'out', amount: p.est, title: `부가세 ${p.label} (계산서 기준 예상)`, acct: '', cat: 'tax', personal: false, pay: 'direct', conf: '', bankName: '', done: false, doneBy: '', noDate: false, overdue: false });
   }
@@ -453,7 +470,7 @@ export function occurrences(S, M, from, to) {
   const planOf = o => (o.src === 'plan' ? S.plans[o.planId] : null);
   out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   for (const o of out) {
-    if (o.noDate || o.src === 'vat') continue;
+    if (o.noDate || o.src === 'vat' || o.src === 'pay') continue; // 급여는 급여 화면의 지급 상태를 그대로 씀
     const k = o.kind === 'in' ? 'in' : 'out';
     // 세금계산서에 연결된 예정: 계산서 대조 결과를 그대로 씀
     if (o.invoiceId && M.inv.st[o.invoiceId]) {

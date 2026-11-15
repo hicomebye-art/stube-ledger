@@ -6,10 +6,13 @@ import { parseFile } from './parsers.js';
 import { commitImport, previewCounts, BANK_TO_ACCT } from './importer.js';
 import * as drive from './drive.js';
 import { SANDBOX, NS, BUILD } from './env.js';
-import { extendUI, costAddView, jobsView } from './jobs-ui.js';
+import { extendUI, costAddView, jobsView, jui } from './jobs-ui.js';
+const jobsAddDate = () => jui.add.date || todayStr();
 import { costModel, dupCosts, costUsing } from './jobs.js';
 import { taxSection, taxMobile, extendTaxUI } from './tax-ui.js';
 import { taxStates } from './tax.js';
+import { payView, closeView, extendPayUI } from './payroll-ui.js';
+import { closeOf, isClosedDate, deviceName } from './payroll.js';
 
 // 카카오톡·네이버 앱 안의 브라우저에서는 구글 로그인이 막힙니다 → 크롬으로 열도록 안내
 const UA = navigator.userAgent || '';
@@ -54,7 +57,7 @@ const ui = {
 };
 
 const NAV = [
-  ['home', '홈'], ['import', '자료 넣기'], ['ledger', '통합 장부'], ['review', '검토'], ['plan', '자금 계획'], ['jobs', '작업·원가'],
+  ['home', '홈'], ['import', '자료 넣기'], ['ledger', '통합 장부'], ['review', '검토'], ['plan', '자금 계획'], ['pay', '급여'], ['jobs', '작업·원가'], ['close', '월 마감'],
   ['invoices', '세금계산서'], ['cards', '카드 사용'], ['recurring', '고정 지출'], ['partners', '거래처'], ['settings', '설정'],
 ];
 
@@ -159,10 +162,11 @@ function statusTag(o) {
     if (o.doneBy === 'bank') return tag(`대조 완료 ${fmtMD(o.tx.date)}${o.diff ? ` · 실제 ${won(o.actual)} (차이 ${o.diff > 0 ? '+' : ''}${won(o.diff)})` : ''}`, o.diff ? 'amber' : 'green');
     if (o.doneBy === 'invoice') return tag('계산서와 대조 완료', 'green');
     if (o.doneBy === 'tax') return tag('세금 납부 확인', 'green');
+    if (o.doneBy === 'paybank') return tag('은행 거래 대조 완료', 'green');
     return tag('사용자 확인 · 은행 대조 전', 'blue');
   }
   if (o.partial) {
-    const src = { bank: '은행 확인', invoice: '계산서 연결', user: '사용자 입력 · 은행 대조 전' }[o.partial] || '';
+    const src = { bank: '은행 확인', invoice: '계산서 연결', user: '사용자 입력 · 은행 대조 전', pay: '급여 화면 기준' }[o.partial] || '';
     return tag(`일부 ${o.kind === 'in' ? '수금' : '지급'} ${won(o.paid)} · 잔액 ${won(o.remain)}${src ? ' (' + src + ')' : ''}`, 'amber') + (o.noDate ? tag(o.kind === 'in' ? '수금일 확인 필요' : '지급일 확인 필요', 'amber') : '');
   }
   if (o.noDate) return tag(o.kind === 'in' ? '수금일 확인 필요' : '지급일 확인 필요', 'amber');
@@ -177,7 +181,7 @@ function occTags(o) {
 }
 
 function dpRow(M, o, compact) {
-  const canCheck = o.src !== 'vat' && o.src !== 'inv' && o.src !== 'cost';
+  const canCheck = o.src !== 'vat' && o.src !== 'inv' && o.src !== 'cost' && o.src !== 'pay';
   if (canCheck) ui.occ.set(o.key, o);
   const ck = canCheck ? `<input type="checkbox" data-chg="occDone" data-key="${esc(o.key)}" ${o.done ? 'checked' : ''} ${o.doneBy === 'bank' || o.doneBy === 'invoice' ? 'disabled' : ''} aria-label="${o.kind === 'in' ? '입금 확인' : '완료'}">` : '<span class="ckph"></span>';
   const when = o.noDate ? (o.wdate ? `계산서 ${fmtMD(o.wdate)}` : '날짜 없음') : fmtMD(o.date);
@@ -756,6 +760,9 @@ VIEWS.settings = M => {
     ${M.accounts.map(a => `<tr><td><input type="text" value="${esc(a.name)}" data-chg="acctField" data-id="${a.id}" data-f="name"></td><td><input type="text" value="${esc(a.holder || '')}" placeholder="예: 홍길동 과장" data-chg="acctField" data-id="${a.id}" data-f="holder"></td></tr>`).join('')}
     </tbody></table>
   </section>
+  <section class="card"><h2>이 기기 이름</h2>
+    <label class="inl"><input type="text" class="w8" value="${esc(deviceName())}" data-chg="devName"> (월 마감·해제 기록의 "작업자"로 남습니다)</label>
+  </section>
   <section class="card"><h2>자료 받기 주기</h2>
     <label class="inl"><input type="number" class="w4" min="1" max="60" value="${s.settings.cycleDays || 15}" data-chg="cycleDays"> 일마다 홈택스·은행 자료 받기</label>
   </section>
@@ -774,6 +781,8 @@ VIEWS.settings = M => {
 };
 
 VIEWS.jobs = M => jobsView(M);
+VIEWS.pay = M => payView(M);
+VIEWS.close = M => closeView(M);
 
 VIEWS.work = () => `
   <h1>업무관리</h1>
@@ -792,6 +801,7 @@ function mobile(route, M) {
     <h2 class="msect">오늘 할 일 <span class="muted s">(받을 돈은 체크하면 입금 확인)</span></h2>
     ${todayPanel(M, true)}
     ${taxMobile(M)}
+    ${(() => { const T = todayStr(), cur = ymOf(T), prev = addMonths(cur, -1); return `<section class="mcard"><h2>월 마감</h2>${[prev, cur].map(m => { const c = closeOf(m); return `<div class="kv"><span>${fmtYM(m)}</span><b>${c ? `<span class="tag green">마감됨 ${esc(c.at.slice(5, 16))} · ${esc(c.by)}</span>` : '<span class="tag gray">마감 전</span>'}</b></div>`; }).join('')}</section>`; })()}
     <section class="mcard">
       <div class="muted">통장 잔액 합계</div><div class="big">${won(M.totalEst)}원</div>
       ${M.accounts.map(a => { const b = M.balances[a.id]; return `<div class="kv"><span>${esc(acctLabel(a))}</span><b>${b.bal === null ? '-' : won(b.est)}</b></div>`; }).join('')}
@@ -1028,6 +1038,7 @@ const CHG = {
     patch('recurring', el.dataset.id, { [f]: v }); commit('rec');
   },
   acctField: el => { patch('accounts', el.dataset.id, { [el.dataset.f]: el.value.trim() }); commit('acct'); },
+  devName: el => { try { localStorage.setItem('stube-device', el.value.trim().slice(0, 20) || 'PC'); } catch { /* 무시 */ } toast('기기 이름을 바꿨습니다'); },
   cycleDays: el => { const n = parseInt(el.value, 10); if (n >= 1 && n <= 60) { setSettings({ cycleDays: n }); commit('settings'); } },
   importJson: async el => {
     const f = el.files[0]; el.value = '';
@@ -1053,6 +1064,34 @@ const CHG = {
 
 extendUI({ ACT, CHG, INP });
 extendTaxUI({ ACT, CHG });
+extendPayUI({ ACT, CHG });
+
+// 월 마감된 달의 자료는 고치지 못하게 (마감 해제는 [월 마감] 화면에서 사유 입력)
+function guard(map, name, dateOf) {
+  const f = map[name];
+  if (!f) return;
+  map[name] = (el, e) => {
+    let d = '';
+    try { d = dateOf(el); } catch { d = ''; }
+    if (d && isClosedDate(d)) { toast(`${fmtYM(String(d).slice(0, 7))}은 월 마감된 달이라 고칠 수 없습니다. [월 마감] 화면에서 마감 해제(사유 입력) 후 고치세요`); if (map === CHG) render(); return; }
+    return f(el, e);
+  };
+}
+const costDate = el => S().costs[el.dataset.id]?.date;
+const txDate = el => S().txns[el.dataset.id]?.date;
+guard(ACT, 'costAlloc', costDate); guard(ACT, 'costDel', costDate); guard(ACT, 'costPaid', costDate); guard(ACT, 'allocDel', costDate);
+guard(CHG, 'costCat', costDate);
+guard(ACT, 'txPersonal', txDate); guard(ACT, 'txNote', txDate); guard(ACT, 'txCost', txDate);
+guard(ACT, 'manDel', el => S().manual[el.dataset.id]?.date);
+guard(ACT, 'planDel', el => S().plans[el.dataset.id]?.date);
+guard(ACT, 'planAdd', () => document.getElementById('pl-date')?.value);
+guard(ACT, 'caSave', () => jobsAddDate());
+guard(CHG, 'occDone', el => ui.occ.get(el.dataset.key)?.date);
+guard(ACT, 'occEdit', el => ui.occ.get(el.dataset.key)?.date);
+guard(ACT, 'occPart', el => ui.occ.get(el.dataset.key)?.date);
+guard(ACT, 'invLink', el => S().invoices[el.dataset.inv]?.wdate);
+guard(ACT, 'invSettle', el => S().invoices[el.dataset.id]?.wdate);
+guard(ACT, 'invCost', el => S().invoices[el.dataset.id]?.wdate);
 
 export function initUI() {
   const root = document.getElementById('app');

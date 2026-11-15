@@ -194,6 +194,42 @@ export async function ocrImage(blob) {
   finally { api(`${DRIVE}/${id}`, { method: 'DELETE' }).catch(() => {}); }
 }
 
+// ───── 구글 캘린더 (읽기 전용, 출근 기록 확인용) ─────
+// 드라이브와 따로 "읽기 전용" 권한만 요청합니다. 일정을 만들거나 고치지 않습니다.
+const CAL_SCOPE = 'https://www.googleapis.com/auth/calendar.readonly';
+const CAL = 'https://www.googleapis.com/calendar/v3';
+export const CAL_API_URL = 'https://console.cloud.google.com/apis/library/calendar-json.googleapis.com?project=stube-ledger-514802';
+let calToken = null, calExp = 0;
+if (meta.calTok && Date.now() < Number(meta.calExp || 0)) { calToken = meta.calTok; calExp = Number(meta.calExp); }
+export const calConnected = () => !!calToken && Date.now() < calExp;
+export function connectCalendar() {
+  return new Promise((resolve, reject) => {
+    const go = () => google.accounts.oauth2.initTokenClient({
+      client_id: CLIENT_ID, scope: CAL_SCOPE,
+      callback: r => { if (r.error) { reject(new Error(r.error)); return; } calToken = r.access_token; calExp = Date.now() + (Number(r.expires_in || 3600) - 120) * 1000; meta.calTok = calToken; meta.calExp = calExp; writeMeta(); resolve(); },
+      error_callback: e => reject(new Error(e?.type || 'popup')),
+    }).requestAccessToken({ prompt: '' });
+    if (window.google?.accounts?.oauth2) go(); else loadGis().then(go, reject);
+  });
+}
+async function calApi(path) {
+  if (!calConnected()) throw new Error('CAL_LOGIN');
+  const r = await fetch(CAL + path, { headers: { Authorization: 'Bearer ' + calToken } });
+  if (r.status === 401) { calToken = null; delete meta.calTok; writeMeta(); throw new Error('CAL_LOGIN'); }
+  if (!r.ok) throw new Error(explain(r.status, await r.text()));
+  return r.json();
+}
+// 테스트에서 가짜로 바꿀 수 있게 묶어 둠
+export const calendar = {
+  connected: () => calConnected(),
+  connect: () => connectCalendar(),
+  async list() { return ((await calApi('/users/me/calendarList?minAccessRole=reader&maxResults=250')).items || []).map(c => ({ id: c.id, name: c.summaryOverride || c.summary })); },
+  async events(calId, from, to) {
+    const q = new URLSearchParams({ timeMin: from + 'T00:00:00+09:00', timeMax: to + 'T23:59:59+09:00', singleEvents: 'true', orderBy: 'startTime', maxResults: '2500' });
+    return ((await calApi(`/calendars/${encodeURIComponent(calId)}/events?${q}`)).items || []).filter(e => e.status !== 'cancelled');
+  },
+};
+
 // 진행 중인 저장(다시 확인 포함)이 모두 끝날 때까지 기다림
 export async function whenIdle() { while (running) await running; }
 
