@@ -283,13 +283,13 @@ function xferTab(M) {
     const e = empById(r.empId) || {}; const ps = payState(M, r, e);
     const carried = r.payDate && r.payDate < `${ym}-01`;
     return `<tr><td>${esc(e.name || '?')}${carried ? ' ' + tag(`이월 · ${fmtYM(ymOf(r.payDate))} 지급분`, 'amber') : ''}<div class="muted s">${r.type === 'weekly' ? '주급' : '급여'} · ${r.payDate ? mdw(r.payDate) : '지급일 미정'}</div></td>
-      <td>${esc(e.bank || '-')}</td><td>${esc(e.holder || '-')}</td><td class="nowrap">${e.acctNo ? `${esc(maskAcct(e.acctNo))} <button class="sm ghost" data-act="pyAcctCopy" data-id="${e.id}">복사</button>` : e.last4 ? '****' + esc(e.last4) : '-'} ${acctReady(e) ? tag('이체 준비 완료', 'green') : tag('계좌 확인 필요', 'red')}</td>
+      <td>${esc(e.bank || '-')}</td><td>${esc(e.holder || '-')}</td><td class="nowrap">${e.acctNo ? `<b class="acctno">${esc(e.acctNo)}</b> <button class="sm ghost" data-act="pyAcctCopy" data-id="${e.id}">복사</button>` : e.last4 ? '****' + esc(e.last4) : '-'} ${acctReady(e) ? tag('이체 준비 완료', 'green') : tag('계좌 확인 필요', 'red')}</td>
       <td class="r"><b>${won(ps.remain ?? r.net)}</b>${ps.paid ? `<div class="muted s">전체 ${won(r.net)} 중 지급 ${won(ps.paid)}</div>` : ''}</td>
       <td>${tag(ps.label, { bank: 'green', user: 'blue', part: 'amber', unpaid: 'red', unverified: 'gray', due: '' }[ps.k] || '')}${ps.hint ? `<div class="hint">같은 금액 거래 ${fmtMD(ps.hint.date)} 있음 — 금액만 같아서 자동 확정하지 않음</div>` : ''}</td>
       <td class="act">${ps.k !== 'bank' && ps.k !== 'user' ? `<button class="sm" data-act="pyPaid" data-id="${r.id}">지급 확인</button>` : ''}${(r.paid || []).length ? `<button class="sm ghost" data-act="pyPaidUndo" data-id="${r.id}">지급 확인 취소</button>` : ''}</td></tr>`;
   }).join('');
   return `<section class="card"><h2>${fmtYM(ym)} 이체 확인표</h2>
-    <div class="hint">앱은 송금하지 않습니다. "지급 확인"은 대표님이 누른 확인, "은행 거래 대조 완료"는 통장 자료에서 예금주 이름과 금액이 확인된 것입니다. 계좌 번호는 가려서 보이고 [복사]로 이체할 때 붙여넣을 수 있습니다.</div>
+    <div class="hint">앱은 송금하지 않습니다. "지급 확인"은 대표님이 누른 확인, "은행 거래 대조 완료"는 통장 자료에서 예금주 이름과 금액이 확인된 것입니다. 이체할 때 쓰도록 계좌 번호 전체가 보입니다 ([복사]로 붙여넣기). 직원 관리 화면에서는 가려서 보입니다.</div>
     ${runs.length ? `<table class="tbl"><thead><tr><th>직원명</th><th>은행</th><th>예금주</th><th>계좌 번호</th><th class="r">이체 금액</th><th>지급 상태</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="muted">이 달에 확정된 급여가 없습니다.</div>'}</section>`;
 }
 
