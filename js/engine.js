@@ -190,9 +190,29 @@ function matchInvoices(S, M) {
     s.how = 'manual';
     s.state = s.paid >= s.eff ? 'paid' : s.paid > 0 ? 'partial' : 'open';
   }
+  // 거래처 화면의 "지급 기록" (실제로 보낸 뒤 사람이 적은 것): 계산서별로 나눈 금액을 그대로 더함.
+  // 그 지급과 같은 통장 출금(합쳐졌거나, 합칠 후보)은 다른 계산서에 자동으로 다시 붙지 않게 막음 → 같은 돈 두 번 안 잡힘
+  const payTx = new Map();
+  for (const p of live('paylogs')) {
+    for (const a of p.alloc || []) {
+      const s = st[a.inv];
+      if (!s || s.state === 'corr' || !(a.amt > 0)) continue;
+      s.paid += a.amt;
+      (s.pays ||= []).push({ id: p.id, amt: a.amt, date: p.date });
+      if (p.date > s.date) s.date = p.date;
+      if (s.how !== 'manual') s.how = 'paylog';
+    }
+    const m = M.manual.find(x => x.id === p.manualId);
+    // 합쳐진 출금 → 같은 통장 후보 → (통장을 잘못 골랐을 때) 다른 통장의 같은 금액·같은 이름·3일 안 출금
+    const t = m && m.linkTxn ? M.txById.get(m.linkTxn)
+      : (M.manualSug.find(x => x.m.id === p.manualId)?.cands || []).find(c => !used.has(c.id))
+      || M.txns.find(c => c.out === p.total && !used.has(c.id) && Math.abs(dayDiff(c.date, p.date)) <= 3 && nameMatch(c.desc, p.name) && !M.info.get(c.id).cancel);
+    if (t) { used.add(t.id); txLeft.set(t.id, Math.max(0, leftOf(t, 'purchase') - p.total)); payTx.set(t.id, p.id); }
+  }
+  for (const i of invs) { const s = st[i.id]; if (s.pays && s.state !== 'corr') s.state = s.paid >= s.eff ? 'paid' : 'partial'; }
   for (const i of invs) {
     const s = st[i.id];
-    if (s.state === 'corr' || s.how === 'manual') continue;
+    if (s.state === 'corr' || s.how === 'manual' || s.how === 'paylog') continue;
     if (i.settled) { Object.assign(s, { state: 'paid', how: 'settled', paid: s.eff }); continue; }
     if (s.eff <= 0) { s.state = 'cancel'; continue; }
     if (i.kind === 'purchase' && (/수입/.test(i.typ) || i.rc === '해당없음')) { s.state = 'na'; continue; }
@@ -255,7 +275,7 @@ function matchInvoices(S, M) {
   for (const i of open) if (st[i.id].state === 'open' && i.kind === 'purchase' && i.rc === '영수' && !sugg[i.id] && !partSugg[i.id]) { st[i.id].state = 'receipt'; st[i.id].remain = 0; }
   const txInv = new Map();
   for (const i of invs) for (const id of st[i.id].txns) push(txInv, id, i.id);
-  return { list: invs, byId, st, sugg, partSugg, groupSugg, txInv, txLeft, leftOf };
+  return { list: invs, byId, st, sugg, partSugg, groupSugg, txInv, txLeft, leftOf, payTx };
 }
 
 function buildReview(S, M) {
@@ -626,8 +646,8 @@ export function partners(M) {
   const p = new Map();
   for (const i of M.inv.list) {
     const s = M.inv.st[i.id];
-    const r = p.get(i.biz) || { biz: i.biz, name: i.name, sales: 0, purchase: 0, recv: 0, pay: 0, n: 0, last: '' };
-    if (i.kind === 'sales') r.sales += i.total; else r.purchase += i.total;
+    const r = p.get(i.biz) || { biz: i.biz, name: i.name, sales: 0, purchase: 0, recv: 0, pay: 0, paid: 0, n: 0, last: '' };
+    if (i.kind === 'sales') r.sales += i.total; else { r.purchase += i.total; r.paid += s.paid || 0; }
     if (s.remain) { if (i.kind === 'sales') r.recv += s.remain; else r.pay += s.remain; }
     r.n++;
     if (i.wdate > r.last) { r.last = i.wdate; r.name = i.name; }

@@ -13,6 +13,7 @@ import { taxSection, taxMobile, extendTaxUI } from './tax-ui.js';
 import { taxStates } from './tax.js';
 import { payView, closeView, extendPayUI } from './payroll-ui.js';
 import { closeOf, isClosedDate, deviceName } from './payroll.js';
+import { partnersView, extendPartnerUI } from './partners-ui.js';
 
 // 카카오톡·네이버 앱 안의 브라우저에서는 구글 로그인이 막힙니다 → 크롬으로 열도록 안내
 const UA = navigator.userAgent || '';
@@ -489,9 +490,9 @@ function ledgerRow(M, t) {
 
 function manualRow(M, m) {
   return `<tr class="manual"><td class="nowrap">${fmtMD(m.date)}</td><td>${esc(acctName(M, m.acct))}</td>
-    <td>${esc(m.memo || '(메모 없음)')} ${tag('핸드폰 기록', 'blue')}${m.costId ? tag('원가', 'green') : ''}${m.personal ? tag('개인', 'amber') : ''}<div class="hint">통장 자료가 들어오면 같은 거래와 합칩니다</div></td>
+    <td>${esc(m.memo || '(메모 없음)')} ${m.payId ? tag('거래처 지급 기록', 'blue') : tag('핸드폰 기록', 'blue')}${m.costId ? tag('원가', 'green') : ''}${m.personal ? tag('개인', 'amber') : ''}<div class="hint">통장 자료가 들어오면 같은 거래와 합칩니다${m.payId ? ' · 취소는 거래처 화면에서' : ''}</div></td>
     <td></td><td class="r">${amt(m.amount, 'out')}</td><td></td>
-    <td class="act"><button class="sm ghost" data-act="manDel" data-id="${m.id}">삭제</button></td></tr>`;
+    <td class="act">${m.payId ? `<button class="sm ghost" data-act="pvCancel" data-id="${esc(m.payId)}">기록 취소</button>` : `<button class="sm ghost" data-act="manDel" data-id="${m.id}">삭제</button>`}</td></tr>`;
 }
 
 // ───────── 검토 ─────────
@@ -528,7 +529,7 @@ function reviewItem(M, it) {
         <div class="btns"><button class="sm primary" data-act="grpLink" data-t="${it.t.id}" data-ids="${esc(it.invs.map(i => i.id).join(','))}">맞음, 연결</button>${ok('아님')}</div></div>`;
     }
     case 'mlink':
-      return `<div class="ri"><div class="ri-t">핸드폰 기록: ${fmtMD(it.m.date)} ${esc(acctName(M, it.m.acct))} ${esc(it.m.memo || '')} <b class="out">-${won(it.m.amount)}</b></div>
+      return `<div class="ri"><div class="ri-t">${it.m.payId ? '거래처 지급 기록' : '핸드폰 기록'}: ${fmtMD(it.m.date)} ${esc(acctName(M, it.m.acct))} ${esc(it.m.memo || '')} <b class="out">-${won(it.m.amount)}</b></div>
         ${it.rows.map(t => `<div class="pick">${txLine(M, t)}<button class="sm primary" data-act="mlink" data-m="${it.m.id}" data-t="${t.id}">이 거래와 같음</button></div>`).join('')}<div class="btns">${ok('다른 거래임')}</div></div>`;
     case 'morph':
       return `<div class="ri"><div class="ri-t">${fmtMD(it.m.date)} ${esc(acctName(M, it.m.acct))} ${esc(it.m.memo || '')} <b class="out">-${won(it.m.amount)}</b></div>
@@ -628,7 +629,7 @@ VIEWS.invoices = M => {
     .sort((a, b) => (a.wdate < b.wdate ? 1 : -1));
   const status = i => {
     const st = M.inv.st[i.id];
-    if (st.state === 'paid') return st.how === 'settled' ? tag('정산 처리', 'gray') : tag(`${i.kind === 'sales' ? '입금' : '송금'} ${fmtMD(st.date)}${st.how === 'group' ? ' (묶음)' : st.how === 'manual' ? ' (직접 연결)' : ''}`, 'green');
+    if (st.state === 'paid') return st.how === 'settled' ? tag('정산 처리', 'gray') : tag(`${i.kind === 'sales' ? '입금' : '송금'} ${fmtMD(st.date)}${st.how === 'group' ? ' (묶음)' : st.how === 'manual' ? ' (직접 연결)' : st.how === 'paylog' ? ' (지급 기록)' : ''}`, 'green');
     if (st.state === 'open') return tag(`${i.kind === 'sales' ? '미수' : '미지급'} ${dayDiff(i.wdate, today)}일`, 'red');
     if (st.state === 'partial') return tag(`일부 ${i.kind === 'sales' ? '수금' : '지급'} ${won(st.paid)} · 잔액 ${won(st.remain)}`, 'amber');
     if (st.state === 'cancel') return tag('취소됨', 'gray');
@@ -641,6 +642,7 @@ VIEWS.invoices = M => {
     if (st.state === 'open') return `<button class="sm" data-act="invSettle" data-id="${esc(i.id)}">정산 완료</button>`;
     if (st.state === 'partial') return `<button class="sm" data-act="invSettle" data-id="${esc(i.id)}">잔액 정산 완료</button><button class="sm ghost" data-act="invReset" data-id="${esc(i.id)}">연결 풀기</button>`;
     if (st.state === 'paid' && (st.how === 'settled' || st.how === 'manual')) return `<button class="sm ghost" data-act="invReset" data-id="${esc(i.id)}">되돌리기</button>`;
+    if (st.how === 'paylog') return '';
     if (st.state === 'paid') return `<button class="sm ghost" data-act="invNoAuto" data-id="${esc(i.id)}">자동 연결 틀림</button>`;
     return i.noAuto ? `<button class="sm ghost" data-act="invReset" data-id="${esc(i.id)}">자동 연결 다시</button>` : '';
   };
@@ -733,16 +735,7 @@ VIEWS.recurring = M => {
 };
 
 // ───────── 거래처 ─────────
-VIEWS.partners = M => {
-  const q = normName(ui.partners.q);
-  const list = partners(M).filter(p => !q || normName(p.name).includes(q));
-  return `
-  <h1>거래처</h1>
-  <div class="filters"><input type="search" id="pq" placeholder="거래처 검색" value="${esc(ui.partners.q)}" data-inp="pq"></div>
-  <table class="tbl"><thead><tr><th>거래처</th><th>사업자번호</th><th class="r">매출 합계</th><th class="r">매입 합계</th><th class="r">미수금</th><th class="r">미지급</th><th>최근</th></tr></thead><tbody>
-  ${list.map(p => `<tr><td>${esc(p.name)}</td><td class="muted">${esc(p.biz)}</td><td class="r">${p.sales ? won(p.sales) : ''}</td><td class="r">${p.purchase ? won(p.purchase) : ''}</td><td class="r">${p.recv ? `<b class="red">${won(p.recv)}</b>` : ''}</td><td class="r">${p.pay ? `<b class="red">${won(p.pay)}</b>` : ''}</td><td>${fmtMD(p.last)}</td></tr>`).join('')}
-  </tbody></table>`;
-};
+VIEWS.partners = M => partnersView(M);
 
 // ───────── 설정 ─────────
 VIEWS.settings = M => {
@@ -1015,7 +1008,6 @@ const ACT = {
 let qTimer;
 const INP = {
   lq: el => { ui.ledger.q = el.value; ui.ledger.limit = 300; clearTimeout(qTimer); qTimer = setTimeout(render, 250); },
-  pq: el => { ui.partners.q = el.value; clearTimeout(qTimer); qTimer = setTimeout(render, 250); },
   addMemo: el => { ui.add.memo = el.value; },
 };
 
@@ -1066,6 +1058,7 @@ const CHG = {
 extendUI({ ACT, CHG, INP });
 extendTaxUI({ ACT, CHG });
 extendPayUI({ ACT, CHG });
+extendPartnerUI({ ACT, CHG, INP });
 
 // 월 마감된 달의 자료는 고치지 못하게 (마감 해제는 [월 마감] 화면에서 사유 입력)
 function guard(map, name, dateOf) {
