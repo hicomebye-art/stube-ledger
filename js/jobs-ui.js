@@ -35,6 +35,21 @@ async function runOcr(f) {
   render();
 }
 
+// 사진 추가 (촬영·파일 고르기·캡처 붙여넣기·끌어다 놓기 공통). 첫 사진이면 바로 글자를 읽어 빈 칸을 채움
+function addFiles(list) {
+  const a = jui.add, added = [];
+  const stamp = new Date().toISOString().replace(/\D/g, '').slice(0, 14);
+  list.forEach((b, i) => {
+    const f = b instanceof File && b.name && b.name !== 'image.png' ? b : new File([b], `캡처-${stamp}${list.length > 1 ? '-' + (i + 1) : ''}.${(b.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`, { type: b.type || 'image/png' });
+    const x = { file: f, kind: a.kind, url: /^image\//.test(f.type) ? URL.createObjectURL(f) : '' };
+    a.files.push(x); added.push(x);
+  });
+  render();
+  if (added.length) toast(`사진 ${added.length}장을 넣었습니다`);
+  const first = added.find(x => x.url);
+  if (first && !a.ocr?.res) runOcr(first);
+}
+
 function ocrBox(a) {
   const o = a.ocr;
   if (!o) return '';
@@ -51,7 +66,9 @@ function ocrBox(a) {
 import { render, toast } from './views.js';
 
 const S = () => store.state;
-const tag = (t, cls = '') => `<span class="tag ${cls}">${esc(t)}</span>`;
+const isWide = () => window.matchMedia('(min-width: 768px)').matches;
+const back = () => jui.back || '#m';
+const tag =(t, cls = '') => `<span class="tag ${cls}">${esc(t)}</span>`;
 const blankAdd = (keep = {}) => ({ mode: 'new', amount: '', acct: keep.acct || '', pay: 'paid', cat: keep.cat || 'expense', partyId: keep.partyId || '', siteId: keep.siteId || '', jobId: keep.jobId || '', vendor: '', note: '', date: '', personal: false, supply: '', vat: '', items: [], files: [], kind: 'receipt', attachTo: '', showTax: false, showItems: false });
 export const jui = { add: blankAdd(), jobs: { q: '', from: '', to: '', sel: '' }, busy: false };
 
@@ -70,10 +87,12 @@ function partySel(M, a, act) {
 function photoBlock(a) {
   return `<div class="lbl">증빙 사진 <span class="muted">(영수증·이체 캡처 둘 다 올려도 비용은 한 번만)</span></div>
     <div class="pills">${Object.entries(EVK).map(([k, l]) => `<button class="pill ${a.kind === k ? 'on' : ''}" data-act="caKind" data-k="${k}">${l}</button>`).join('')}</div>
-    <div class="photos">
+    <div class="photos evdrop">
       <label class="pbtn">📷 촬영<input type="file" accept="image/*" capture="environment" data-chg="caFiles" hidden></label>
-      <label class="pbtn">🖼 갤러리<input type="file" accept="image/*,application/pdf" multiple data-chg="caFiles" hidden></label>
+      <label class="pbtn">🖼 ${isWide() ? '사진 파일' : '갤러리'}<input type="file" accept="image/*,application/pdf" multiple data-chg="caFiles" hidden></label>
+      <button type="button" class="pbtn" data-act="caPaste">📋 캡처 붙여넣기</button>
     </div>
+    ${isWide() ? '<div class="hint">PC에서는 <b>Win + Shift + S</b>로 영수증 부분을 캡처한 뒤, 이 화면에서 <b>Ctrl + V</b>를 누르세요. 사진 파일을 여기로 끌어다 놓아도 됩니다.</div>' : ''}
     ${a.files.length ? `<div class="thumbs">${a.files.map((f, i) => `<span class="thumb">${f.url ? `<img src="${f.url}" alt="">` : '📄'}<small>${EVK[f.kind]}</small><button type="button" data-act="caRm" data-i="${i}" aria-label="빼기">×</button>${f.url ? `<button type="button" class="ocrbtn" data-act="caOcr" data-i="${i}" title="이 사진 글자 읽기">🔎</button>` : ''}</span>`).join('')}</div>` : ''}
     ${ocrBox(a)}`;
 }
@@ -94,7 +113,7 @@ export function costAddView(M) {
       ${costs.length ? costs.map(c => row('c:' + c.id, c.date, costTitle(c), c.total, ` ${tag(CAT[c.cat] || '')}${evOf(c.id).length ? ' 📎' + evOf(c.id).length : ''}`)).join('') : '<div class="muted">최근 등록한 비용이 없습니다.</div>'}
       ${txs.length ? `<div class="lbl">통장 출금 (아직 원가 아님 → 붙이면 원가로 등록)</div>${txs.map(t => row('t:' + t.id, t.date, esc(t.desc), t.out, '')).join('')}` : ''}
       ${photoBlock(a)}
-      <div class="row2"><a class="mbtn ghost" href="#m">취소</a><button class="mbtn" data-act="caAttach" ${jui.busy ? 'disabled' : ''}>증빙 붙이기</button></div></section>`;
+      <div class="row2"><a class="mbtn ghost" href="${back()}">취소</a><button class="mbtn" data-act="caAttach" ${jui.busy ? 'disabled' : ''}>증빙 붙이기</button></div></section>`;
   }
   const n = parseWonInput(a.amount || '0');
   return `<section class="mcard add">${tabs}
@@ -115,7 +134,7 @@ export function costAddView(M) {
       ${a.showItems ? `${a.items.map((it, i) => `<div class="item"><input type="text" id="it-n-${i}" placeholder="품명" value="${esc(it.name)}" data-inp="caItem" data-i="${i}" data-f="name"><input type="text" id="it-q-${i}" class="w4" inputmode="decimal" placeholder="수량" value="${esc(it.qty)}" data-inp="caItem" data-chg="caItemDone" data-i="${i}" data-f="qty"><input type="text" id="it-u-${i}" class="w4" placeholder="단위" value="${esc(it.unit)}" data-inp="caItem" data-i="${i}" data-f="unit"><input type="text" id="it-p-${i}" inputmode="numeric" placeholder="단가" value="${esc(it.price)}" data-inp="caItem" data-chg="caItemDone" data-i="${i}" data-f="price"><span class="num">${won(itemAmt(it))}</span><button type="button" class="sm ghost" data-act="caItemRm" data-i="${i}">×</button></div>`).join('')}
         <button type="button" class="sm" data-act="caItemAdd">+ 품목</button>${a.items.length ? `<div class="hint">품목 합계 ${won(a.items.reduce((s, it) => s + itemAmt(it), 0))}원</div>` : ''}` : ''}</div>
     <div class="row2"><input type="date" id="ca-date" value="${a.date}" data-chg="caDate"><label class="chk"><input type="checkbox" data-chg="caPersonal" ${a.personal ? 'checked' : ''}> 개인 지출</label></div>
-    <div class="row2"><a class="mbtn ghost" href="#m">취소</a><button class="mbtn" data-act="caSave" ${jui.busy ? 'disabled' : ''}>저장</button></div>
+    <div class="row2"><a class="mbtn ghost" href="${back()}">취소</a><button class="mbtn" data-act="caSave" ${jui.busy ? 'disabled' : ''}>저장</button></div>
   </section>`;
 }
 
@@ -130,7 +149,7 @@ export function jobsView(M) {
   const sel = st.sel && CM.byJob.get(st.sel);
   const jobOpts = (cur = '') => `<option value="">작업 고르기</option>${allJobs.map(j => `<option value="${j.id}" ${j.id === cur ? 'selected' : ''}>${esc(jobLabel(j))}</option>`).join('')}`;
   return `
-  <h1>작업·원가</h1>
+  <div class="row-h"><h1>작업·원가</h1><span><a class="btn primary" href="#m-add" data-act="mAdd" data-m="new">+ 지출·영수증 기록 (캡처 붙여넣기)</a> <a class="btn" href="#m-add" data-act="mAdd" data-m="attach">📎 증빙만 붙이기</a></span></div>
   <div class="filters">
     <input type="search" id="jq" placeholder="검색: 거래처·현장·작업·PO·비고·품명 (예: 목동 진동센서)" value="${esc(st.q)}" data-inp="jq" style="min-width:320px">
     <label class="inl">기간 <input type="date" value="${st.from}" data-chg="jPer" data-f="from"> ~ <input type="date" value="${st.to}" data-chg="jPer" data-f="to"></label>
@@ -223,7 +242,7 @@ export function extendUI({ ACT, CHG, INP }) {
   const A = () => jui.add;
   Object.assign(ACT, {
     caMode: el => { A().mode = el.dataset.m; render(); },
-    mAdd: el => { A().mode = el.dataset.m; if (location.hash === '#m-add') render(); else location.hash = '#m-add'; },
+    mAdd: el => { A().mode = el.dataset.m; const h = location.hash; if (h !== '#m-add') jui.back = h || (isWide() ? '#home' : '#m'); if (location.hash === '#m-add') render(); else location.hash = '#m-add'; },
     caNp: el => { const k = el.dataset.k; let s = A().amount || ''; if (k === '←') s = s.slice(0, -1); else if (s.length < 12) s = (s + k).replace(/^0+/, ''); A().amount = s; render(); },
     caAcct: el => { if (el.dataset.a === '__unpaid') A().pay = 'unpaid'; else { A().pay = 'paid'; A().acct = el.dataset.a; } render(); },
     caCat: el => { A().cat = el.dataset.k; render(); },
@@ -232,6 +251,18 @@ export function extendUI({ ACT, CHG, INP }) {
     caItemAdd: () => { A().items.push({ name: '', qty: '', unit: '', price: '' }); render(); },
     caItemRm: el => { A().items.splice(+el.dataset.i, 1); render(); },
     caOcr: el => { runOcr(A().files[+el.dataset.i]); },
+    caPaste: async () => {
+      // 버튼으로 붙여넣기: 브라우저가 "클립보드 보기 허용"을 물을 수 있음. 안 되면 Ctrl+V 안내
+      try {
+        const got = [];
+        for (const it of await navigator.clipboard.read()) {
+          const t = it.types.find(x => /^image\//.test(x));
+          if (t) got.push(await it.getType(t));
+        }
+        if (!got.length) { toast('복사된 캡처가 없습니다. Win+Shift+S로 캡처한 뒤 다시 누르세요'); return; }
+        addFiles(got);
+      } catch { toast('여기서 Ctrl+V를 눌러 붙여넣으세요 (브라우저가 버튼 붙여넣기를 막았습니다)'); }
+    },
     caOcrText: () => { A().showOcrText = !A().showOcrText; render(); },
     caRm: el => { const f = A().files.splice(+el.dataset.i, 1)[0]; if (f && f.url) URL.revokeObjectURL(f.url); render(); },
     caSave: async () => {
@@ -255,7 +286,7 @@ export function extendUI({ ACT, CHG, INP }) {
         if (sim.length && !confirm(`${fmtMD(sim[0].date)} ${sim[0].vendor || sim[0].note || ''} ${won(total)}원 비용이 이미 있습니다.\n\n[확인] 다른 비용이 맞음 → 새로 등록\n[취소] 같은 비용임 → 그 비용에 사진만 붙이기 (돈은 한 번만 잡힘)`)) {
           let dup = 0;
           for (const f of a.files) { const r = await addEvidence(f.file, sim[0].id, f.kind); if (r.dup) dup++; }
-          jui.add = blankAdd(a); location.hash = '#m';
+          jui.add = blankAdd(a); location.hash = back();
           toast(`기존 비용에 사진 ${a.files.length - dup}장을 붙였습니다`);
           return;
         }
@@ -269,7 +300,7 @@ export function extendUI({ ACT, CHG, INP }) {
         let dup = 0;
         for (const f of a.files) { const r = await addEvidence(f.file, id, f.kind); if (r.dup) dup++; }
         const msg = `${won(total)}원 ${a.jobId ? '저장' : '미분류로 저장'}${a.files.length ? ` · 사진 ${a.files.length - dup}장` : ''}${dup ? ` (같은 사진 ${dup}장은 이미 있음)` : ''}`;
-        jui.add = blankAdd(a); location.hash = '#m'; toast(msg);
+        jui.add = blankAdd(a); location.hash = back(); toast(msg);
       } catch (e) { toast('저장 중 문제: ' + e.message); }
       finally { jui.busy = false; }
     },
@@ -289,7 +320,7 @@ export function extendUI({ ACT, CHG, INP }) {
         let dup = 0;
         for (const f of a.files) { const r = await addEvidence(f.file, costId, f.kind); if (r.dup) dup++; }
         const n = a.files.length - dup;
-        jui.add = blankAdd(a); location.hash = '#m';
+        jui.add = blankAdd(a); location.hash = back();
         toast(`사진 ${n}장을 붙였습니다${dup ? ` (같은 사진 ${dup}장은 이미 있음)` : ''}. 돈은 새로 잡지 않았습니다`);
       } catch (e) { toast('붙이는 중 문제: ' + e.message); }
       finally { jui.busy = false; }
@@ -349,20 +380,30 @@ export function extendUI({ ACT, CHG, INP }) {
   Object.assign(CHG, {
     caSel: el => { if (pickHier(model(), A(), el)) render(); },
     njSel: el => { jui.newJob ||= { partyId: '', siteId: '', jobId: '' }; if (pickHier(model(), jui.newJob, el)) render(); },
-    caFiles: el => {
-      const added = [];
-      for (const f of el.files) { const x = { file: f, kind: A().kind, url: /^image\//.test(f.type) ? URL.createObjectURL(f) : '' }; A().files.push(x); added.push(x); }
-      el.value = ''; render();
-      // 첫 사진이면 바로 글자를 읽어 빈 칸을 채움
-      const first = added.find(x => x.url);
-      if (first && !A().ocr?.res) runOcr(first);
-    },
+    caFiles: el => { const fs = [...el.files]; el.value = ''; addFiles(fs); },
     caAttachTo: el => { A().attachTo = el.value; },
     caDate: el => { A().date = el.value; A().dateSet = true; },
     caPersonal: el => { A().personal = el.checked; },
     caItemDone: () => render(),
     jPer: el => { jui.jobs[el.dataset.f] = el.value; render(); },
     costCat: el => { patch('costs', el.dataset.id, { cat: el.value }); commit('cost'); },
+  });
+  // PC: 캡처(Win+Shift+S) → Ctrl+V, 또는 사진 파일 끌어다 놓기 (지출·증빙 기록 화면에서만)
+  const onAdd = () => location.hash === '#m-add';
+  const okFile = f => /^image\//.test(f.type) || f.type === 'application/pdf';
+  document.addEventListener('paste', e => {
+    if (!onAdd()) return;
+    const fs = [...(e.clipboardData?.files || [])].filter(okFile);
+    if (!fs.length) return; // 글자 붙여넣기는 그대로
+    e.preventDefault(); addFiles(fs);
+  });
+  document.addEventListener('dragover', e => { if (onAdd() && [...(e.dataTransfer?.types || [])].includes('Files')) { e.preventDefault(); document.querySelector('.evdrop')?.classList.add('over'); } });
+  document.addEventListener('dragleave', e => { if (!e.relatedTarget) document.querySelector('.evdrop')?.classList.remove('over'); });
+  document.addEventListener('drop', e => {
+    if (!onAdd()) return;
+    const fs = [...(e.dataTransfer?.files || [])].filter(okFile);
+    e.preventDefault(); document.querySelector('.evdrop')?.classList.remove('over');
+    if (fs.length) addFiles(fs); else toast('사진(그림) 파일이나 PDF만 올릴 수 있습니다');
   });
   let t;
   Object.assign(INP, {

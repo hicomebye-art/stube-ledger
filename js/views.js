@@ -136,6 +136,7 @@ function shell(route, M) {
   <div class="layout">
     <aside class="side">
       ${NAV.map(([id, label]) => `<a href="#${id}" class="${route === id ? 'on' : ''}">${label}${id === 'review' && open ? ` <span class="badge">${open}</span>` : ''}</a>`).join('')}
+      <a href="#m-add" class="sub" data-act="mAdd" data-m="new">+ 지출·영수증 기록</a>
       <a href="#m" class="sub">핸드폰 화면</a>
       <div class="muted s" style="padding:8px 12px">앱 버전 ${BUILD}</div>
     </aside>

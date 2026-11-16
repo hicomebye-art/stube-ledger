@@ -15,7 +15,9 @@ export async function readPhoto(file) {
 }
 
 const N = s => String(s).normalize('NFKC');
-const AMT_RE = /(?:₩|\\)?\s*(\d{1,3}(?:[,.]\d{3})+|\d{3,9})(?!\d)\s*원?/g;
+// 손글씨는 쉼표 자리가 틀리기도 함 (4,8300 → 48300). 쉼표로만 이어진 숫자는 숫자만 모아 읽고, 화면에 확인 경고
+const AMT_RE = /(?:₩|\\)?\s*(\d{1,3}(?:\.\d{3})+(?![\d,])|\d+(?:,\d+)+|\d{3,9})(?!\d)\s*원?/g;
+const oddComma = raw => /,/.test(raw) && !/^\d{1,3}(?:,\d{3})+$/.test(raw);
 const toWon = s => { const v = s.replace(/[^\d]/g, ''); return v ? parseInt(v, 10) : NaN; };
 
 function amountsIn(line) {
@@ -37,7 +39,8 @@ function keyAmounts(lines, keyRe, skipRe) {
     if (!keyRe.test(l) || (skipRe && skipRe.test(l))) return;
     const after = l.slice(l.search(keyRe));
     let a = amountsIn(after);
-    if (!a.length && lines[i + 1] && !keyRe.test(lines[i + 1])) a = amountsIn(lines[i + 1]);
+    // 표 머리줄(품목·수량·단가…)이면 다음 줄은 품목 줄이라 읽지 않음
+    if (!a.length && lines[i + 1] && !keyRe.test(lines[i + 1]) && !/수\s*량|단\s*가|규\s*격|품\s*목/.test(l)) a = amountsIn(lines[i + 1]);
     if (a.length) res.push(a[0]); // 키워드 바로 뒤의 첫 금액
   });
   return res;
@@ -47,7 +50,9 @@ const TOTAL_RE = /(합\s*계|총\s*액|총\s*합\s*계|총\s*금\s*액|결\s*제
 const VAT_RE = /(부\s*가\s*세|부가가치세|세\s*액|V\s*\.?\s*A\s*\.?\s*T)/i;
 const SUPPLY_RE = /(공\s*급\s*가\s*액?|과\s*세\s*물\s*품\s*가?\s*액?|과\s*세\s*금\s*액|과\s*세\s*매\s*출)/;
 const VENDOR_RE = /(상\s*호\s*명?|가\s*맹\s*점\s*명?|매\s*장\s*명|판\s*매\s*자|업\s*체\s*명|받는\s*분|받는\s*사람|받으시는\s*분|입금\s*받는\s*분|예금주|보낸\s*분)\s*[:：]?\s*(.*)$/;
-const NOT_VENDOR = /영수증|매출전표|신용카드|카드\s*승인|체크카드|거래명세|간이|고객용|가맹점용|사업자|대표|주소|전화|TEL|일시|날짜|번호|승인|금액|합계|부가세|공급|이체|송금|입금|출금|완료|결과|조회/i;
+const NOT_VENDOR = /영수증|매출전표|신용카드|카드\s*승인|체크카드|거래\s*명\s*세|간이|고객용|가맹점용|사업자|대표|주소|전화|TEL|일시|날짜|번호|승인|금액|합계|부가세|공급|이체|송금|입금|출금|완료|결과|조회|귀\s*하|계산합니다|등\s*록|성\s*명|업\s*태|종\s*목|소재지|품\s*목|규\s*격|수\s*량|단\s*가/i;
+// 거래명세표 양식 글자 (상호 칸이 비어 있으면 옆 칸 이름표가 읽힘) — 지급처로 쓰지 않음
+const FORM_LABEL = /^(성\s*명|사\s*업\s*장|소\s*재\s*지|업\s*태|종\s*목|등\s*록|번\s*호|귀\s*하|\(?인\)?|㊞)/;
 
 function findDate(text) {
   const t = N(text);
@@ -70,11 +75,12 @@ function findVendor(lines) {
     const m = l.match(VENDOR_RE);
     if (m) {
       let v = (m[2] || '').replace(/\d{3}-\d{2}-\d{5}.*/, '').replace(/(대표자?|TEL|전화).*/i, '').replace(/[:：]/g, '').trim();
-      if (v.length >= 2 && !/^\d/.test(v)) return v.slice(0, 40);
+      if (v.length >= 2 && !/^\d/.test(v) && !FORM_LABEL.test(v) && !/귀\s*하/.test(v)) return v.slice(0, 40);
     }
   }
   // 이름표가 없으면: 위쪽 몇 줄 중 글자가 대부분인 줄 (보통 가게 이름)
-  for (const l of lines.slice(0, 6)) {
+  for (const [i, l] of lines.slice(0, 6).entries()) {
+    if (/년\s*월\s*일|^권\s*호?$/.test(l) || VENDOR_RE.test(l) || /^귀\s*하/.test(lines[i + 1] || '')) continue; // 빈 날짜칸, "OOO 귀하"(받는 쪽 = 우리)
     const hangul = (l.match(/[가-힣A-Za-z]/g) || []).length;
     if (hangul >= 2 && hangul >= l.replace(/\s/g, '').length * 0.6 && !NOT_VENDOR.test(l)) return l.slice(0, 40);
   }
@@ -101,5 +107,6 @@ export function parseReceipt(text) {
   if (!date) warn.push('날짜를 못 읽었습니다');
   if (supply != null && vat != null && total != null && supply + vat !== total) warn.push(`공급가+부가세(${(supply + vat).toLocaleString('ko-KR')})가 합계와 다릅니다 — 사진을 확인하세요`);
   if (vat != null && supply == null) warn.push('부가세는 읽었지만 공급가를 못 읽었습니다');
+  if ([...t.matchAll(/\d+(?:,\d+)+/g)].some(m => oddComma(m[0]))) warn.push('쉼표 자리가 맞지 않는 숫자가 있습니다 (손글씨일 수 있음) — 금액을 꼭 확인하세요');
   return { date, vendor, biz, total, supply, vat, dir, kind, warn };
 }
