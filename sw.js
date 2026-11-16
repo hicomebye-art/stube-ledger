@@ -1,5 +1,5 @@
 // 오프라인에서도 앱 화면이 열리도록 앱 파일만 보관합니다. (장부 자료와 구글 통신은 보관하지 않음)
-const CACHE = 'stube-ledger-v3-11';
+const CACHE = 'stube-ledger-v3-12';
 const SCOPE = new URL(self.registration.scope).pathname;
 const SHELL = ['./', 'index.html', 'css/app.css', 'js/main.js', 'js/env.js', 'js/util.js', 'js/jobs.js', 'js/jobs-ui.js', 'js/evidence.js', 'js/ocr.js', 'js/tax.js', 'js/tax-ui.js', 'js/payroll.js', 'js/payroll-ui.js', 'js/store.js', 'js/engine.js', 'js/parsers.js', 'js/importer.js', 'js/drive.js', 'js/views.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
 const CDN = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';

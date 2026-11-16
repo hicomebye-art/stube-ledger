@@ -4,7 +4,7 @@
 //  - 구글 드라이브: "에스튜브 경리 앱 데이터 (테스트 이름)" 폴더 (실제 장부 폴더와 다름)
 // 예) https://hicomebye-art.github.io/stube-ledger/?test=sync
 // 화면에 보이는 앱 버전 (새 버전이 들어왔는지 확인용)
-export const BUILD = '3.11 (11/16)';
+export const BUILD = '3.12 (11/16)';
 
 const q = new URLSearchParams(location.search);
 export const SANDBOX = (q.get('test') || '').replace(/[^0-9A-Za-z가-힣_-]/g, '').slice(0, 20);

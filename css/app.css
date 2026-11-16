@@ -43,6 +43,8 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--green); ve
 .side a:hover { background: var(--gray-bg); }
 .side a.on { background: var(--green-bg); color: var(--green-t); font-weight: 600; }
 .side a.sub { margin-top: auto; font-size: 12px; color: var(--muted); }
+.side a.addbtn { background: var(--green-t); color: #fff; font-weight: 700; justify-content: center; margin-bottom: 8px; }
+.side a.addbtn:hover { background: var(--green-t); opacity: .9; }
 main { padding: 20px 24px 60px; min-width: 0; max-width: 1180px; }
 .badge { background: var(--red); color: #fff; border-radius: 10px; padding: 0 7px; font-size: 11px; font-weight: 600; }
 
